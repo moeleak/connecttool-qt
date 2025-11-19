@@ -10,7 +10,6 @@
 #include <steamnetworkingtypes.h>
 #include "tcp_server.h"
 #include "tcp/tcp_client.h"
-#include "control_packets.h"
 
 class SteamMessageHandler {
 public:
@@ -23,7 +22,6 @@ public:
 private:
     void run();
     void pollMessages();
-    void handleControlPacket(const char* data, size_t size, HSteamNetConnection conn);
 
     boost::asio::io_context& io_context_;
     ISteamNetworkingSockets* m_pInterface_;

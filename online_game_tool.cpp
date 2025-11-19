@@ -14,7 +14,7 @@
 #include <memory>
 #include "tcp_server.h"
 #include "tcp/tcp_client.h"
-#include "steamnet/steam_networking_manager.h"
+#include "steam/steam_networking_manager.h"
 
 using boost::asio::ip::tcp;
 

@@ -11,32 +11,12 @@
 #include <steamnetworkingtypes.h>
 #include <isteammatchmaking.h>
 #include "steam_message_handler.h"
+#include "steam_room_manager.h"
 
 // Forward declarations
 class TCPClient;
 class TCPServer;
 class SteamNetworkingManager;
-
-// Callback class for Steam Friends
-class SteamFriendsCallbacks {
-public:
-    SteamFriendsCallbacks(SteamNetworkingManager* manager);
-    STEAM_CALLBACK(SteamFriendsCallbacks, OnGameRichPresenceJoinRequested, GameRichPresenceJoinRequested_t);
-    STEAM_CALLBACK(SteamFriendsCallbacks, OnGameLobbyJoinRequested, GameLobbyJoinRequested_t);
-private:
-    SteamNetworkingManager* manager_;
-};
-
-// Callback class for Steam Matchmaking
-class SteamMatchmakingCallbacks {
-public:
-    SteamMatchmakingCallbacks(SteamNetworkingManager* manager);
-    STEAM_CALLBACK(SteamMatchmakingCallbacks, OnLobbyCreated, LobbyCreated_t);
-    STEAM_CALLBACK(SteamMatchmakingCallbacks, OnLobbyListReceived, LobbyMatchList_t);
-    STEAM_CALLBACK(SteamMatchmakingCallbacks, OnLobbyEntered, LobbyEnter_t);
-private:
-    SteamNetworkingManager* manager_;
-};
 
 // User info structure
 struct UserInfo {
@@ -64,8 +44,8 @@ public:
     void leaveLobby();
     bool searchLobbies();
     bool joinLobby(CSteamID lobbyID);
-    const std::vector<CSteamID>& getLobbies() const { return lobbies; }
-    CSteamID getCurrentLobby() const { return currentLobby; }
+    const std::vector<CSteamID>& getLobbies() const;
+    CSteamID getCurrentLobby() const;
 
     // Joining
     bool joinHost(uint64 hostID);
@@ -109,10 +89,6 @@ private:
     HSteamNetConnection g_hConnection;
     CSteamID g_hostSteamID;
 
-    // Lobby
-    std::vector<CSteamID> lobbies;
-    CSteamID currentLobby;
-
     // Connections
     std::vector<HSteamNetConnection> connections;
     std::map<HSteamNetConnection, UserInfo> userMap;
@@ -125,8 +101,9 @@ private:
 
     // Friends
     std::vector<std::pair<CSteamID, std::string>> friendsList;
-    SteamFriendsCallbacks* steamFriendsCallbacks;
-    SteamMatchmakingCallbacks* steamMatchmakingCallbacks;
+
+    // Room manager
+    SteamRoomManager* roomManager_;
 
     // Message handler dependencies
     boost::asio::io_context* io_context_;
@@ -139,6 +116,8 @@ private:
     // Callback
     static void OnSteamNetConnectionStatusChanged(SteamNetConnectionStatusChangedCallback_t *pInfo);
     void handleConnectionStatusChanged(SteamNetConnectionStatusChangedCallback_t *pInfo);
+
+    friend class SteamRoomManager;
 };
 
 #endif // STEAM_NETWORKING_MANAGER_H

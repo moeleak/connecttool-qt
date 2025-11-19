@@ -1,5 +1,5 @@
 #include "tcp_server.h"
-#include "../steamnet/steam_networking_manager.h"
+#include "../steam/steam_networking_manager.h"
 #include <iostream>
 #include <algorithm>
 
