@@ -15,7 +15,8 @@ bool TCPServer::start() {
         acceptor_.bind(endpoint);
         acceptor_.listen();
 
-        multiplexManager_ = std::make_unique<MultiplexManager>(manager_->getInterface(), manager_->getConnection());
+        multiplexManager_ = std::make_unique<MultiplexManager>(manager_->getInterface(), manager_->getConnection(),
+                                                                io_context_, manager_->getIsHost(), *manager_->getLocalPort());
 
         running_ = true;
         serverThread_ = std::thread([this]() { 

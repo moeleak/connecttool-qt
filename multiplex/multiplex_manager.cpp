@@ -2,8 +2,10 @@
 #include <iostream>
 #include <cstring>
 
-MultiplexManager::MultiplexManager(ISteamNetworkingSockets* steamInterface, HSteamNetConnection steamConn)
-    : steamInterface_(steamInterface), steamConn_(steamConn), nextId_(1) {}
+MultiplexManager::MultiplexManager(ISteamNetworkingSockets* steamInterface, HSteamNetConnection steamConn,
+                                   boost::asio::io_context& io_context, bool& isHost, int& localPort)
+    : steamInterface_(steamInterface), steamConn_(steamConn), nextId_(1),
+      io_context_(io_context), isHost_(isHost), localPort_(localPort) {}
 
 MultiplexManager::~MultiplexManager() {
     // Close all sockets
@@ -65,6 +67,24 @@ void MultiplexManager::handleTunnelPacket(const char* data, size_t len) {
         size_t dataLen = len - sizeof(uint32_t) * 2;
         const char* packetData = data + sizeof(uint32_t) * 2;
         auto socket = getClient(id);
+        if (!socket && isHost_ && localPort_ > 0) {
+            // 如果是主持且没有对应的 TCP Client，创建一个连接到本地端口
+            std::cout << "Creating new TCP client for id " << id << " connecting to localhost:" << localPort_ << std::endl;
+            try {
+                auto newSocket = std::make_shared<tcp::socket>(io_context_);
+                tcp::resolver resolver(io_context_);
+                auto endpoints = resolver.resolve("127.0.0.1", std::to_string(localPort_));
+                boost::asio::connect(*newSocket, endpoints);
+                
+                std::lock_guard<std::mutex> lock(mapMutex_);
+                clientMap_[id] = newSocket;
+                socket = newSocket;
+                std::cout << "Successfully created TCP client for id " << id << std::endl;
+            } catch (const std::exception& e) {
+                std::cerr << "Failed to create TCP client for id " << id << ": " << e.what() << std::endl;
+                return;
+            }
+        }
         if (socket) {
             boost::asio::async_write(*socket, boost::asio::buffer(packetData, dataLen), [](const boost::system::error_code&, std::size_t) {});
         } else {

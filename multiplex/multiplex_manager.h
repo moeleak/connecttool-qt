@@ -13,7 +13,8 @@ using boost::asio::ip::tcp;
 
 class MultiplexManager {
 public:
-    MultiplexManager(ISteamNetworkingSockets* steamInterface, HSteamNetConnection steamConn);
+    MultiplexManager(ISteamNetworkingSockets* steamInterface, HSteamNetConnection steamConn, 
+                     boost::asio::io_context& io_context, bool& isHost, int& localPort);
     ~MultiplexManager();
 
     uint32_t addClient(std::shared_ptr<tcp::socket> socket);
@@ -30,4 +31,7 @@ private:
     std::unordered_map<uint32_t, std::shared_ptr<tcp::socket>> clientMap_;
     std::mutex mapMutex_;
     uint32_t nextId_;
+    boost::asio::io_context& io_context_;
+    bool& isHost_;
+    int& localPort_;
 };
