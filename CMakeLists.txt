@@ -47,6 +47,26 @@ if(NOT STEAMWORKS_INCLUDE_DIR OR NOT STEAMWORKS_LIBRARY)
     message(FATAL_ERROR "Steamworks SDK not found. Set STEAMWORKS_PATH_HINT or place the SDK in ./steamworks or ./sdk.")
 endif()
 
+if(WIN32)
+    set(_steam_runtime_names steam_api64.dll steam_api.dll)
+elseif(APPLE)
+    set(_steam_runtime_names libsteam_api.dylib)
+else()
+    set(_steam_runtime_names libsteam_api.so)
+endif()
+
+find_file(STEAMWORKS_RUNTIME_LIBRARY
+    NAMES ${_steam_runtime_names}
+    PATHS ${_steam_lib_hints})
+
+if(WIN32 AND NOT STEAMWORKS_RUNTIME_LIBRARY)
+    message(FATAL_ERROR "Steamworks redistributable DLL not found. Ensure steam_api64.dll is available in the redistributable_bin directory.")
+endif()
+
+if(NOT STEAMWORKS_RUNTIME_LIBRARY)
+    set(STEAMWORKS_RUNTIME_LIBRARY ${STEAMWORKS_LIBRARY})
+endif()
+
 add_executable(connecttool-qt
     src/main.cpp
     src/backend.cpp
@@ -78,7 +98,7 @@ target_link_libraries(connecttool-qt PRIVATE
 # install time, and make sure the loader can find it on macOS.
 add_custom_command(TARGET connecttool-qt POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${STEAMWORKS_LIBRARY}
+            ${STEAMWORKS_RUNTIME_LIBRARY}
             $<TARGET_FILE_DIR:connecttool-qt>)
 
 if(APPLE)
@@ -96,4 +116,4 @@ qt_add_qml_module(connecttool-qt
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/steam_appid.txt "480\n")
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/steam_appid.txt DESTINATION bin)
 install(TARGETS connecttool-qt RUNTIME DESTINATION bin)
-install(FILES ${STEAMWORKS_LIBRARY} DESTINATION bin OPTIONAL)
+install(FILES ${STEAMWORKS_RUNTIME_LIBRARY} DESTINATION bin OPTIONAL)
