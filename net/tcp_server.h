@@ -1,6 +1,7 @@
 #pragma once
 
 #include <boost/asio.hpp>
+#include <functional>
 #include <memory>
 #include <vector>
 #include <string>
@@ -27,10 +28,12 @@ public:
     void sendToAll(const std::string& message, std::shared_ptr<tcp::socket> excludeSocket = nullptr);
     void sendToAll(const char* data, size_t size, std::shared_ptr<tcp::socket> excludeSocket = nullptr);
     int getClientCount();
+    void setClientCountCallback(std::function<void(int)> callback);
 
 private:
     void start_accept();
     void start_read(std::shared_ptr<tcp::socket> socket, std::string id);
+    void notifyClientCount(int count);
 
     int port_;
     bool running_;
@@ -41,4 +44,5 @@ private:
     std::mutex clientsMutex_;
     std::thread serverThread_;
     SteamNetworkingManager* manager_;
+    std::function<void(int)> clientCountCallback_;
 };

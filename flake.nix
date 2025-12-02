@@ -27,19 +27,35 @@
           steamworksEnv = builtins.getEnv "STEAMWORKS_PATH_HINT";
           steamworksSdkEnv = builtins.getEnv "STEAMWORKS_SDK_DIR";
           steamworksEnvPath =
-            if steamworksEnv != "" then builtins.path { path = steamworksEnv; name = "steamworks-hint"; }
-            else null;
+            if steamworksEnv != "" then
+              builtins.path {
+                path = steamworksEnv;
+                name = "steamworks-hint";
+              }
+            else
+              null;
           steamworksSdkEnvPath =
-            if steamworksSdkEnv != "" then builtins.path { path = steamworksSdkEnv; name = "steamworks-sdk"; }
-            else null;
+            if steamworksSdkEnv != "" then
+              builtins.path {
+                path = steamworksSdkEnv;
+                name = "steamworks-sdk";
+              }
+            else
+              null;
           steamworksHint =
-            if steamworksEnvPath != null then steamworksEnvPath
-            else if steamworksSdkEnvPath != null then steamworksSdkEnvPath
-            else repoRoot + "/steamworks";
+            if steamworksEnvPath != null then
+              steamworksEnvPath
+            else if steamworksSdkEnvPath != null then
+              steamworksSdkEnvPath
+            else
+              repoRoot + "/steamworks";
           steamworksSdkHint =
-            if steamworksSdkEnvPath != null then steamworksSdkEnvPath
-            else if steamworksEnvPath != null then steamworksEnvPath
-            else repoRoot + "/sdk";
+            if steamworksSdkEnvPath != null then
+              steamworksSdkEnvPath
+            else if steamworksEnvPath != null then
+              steamworksEnvPath
+            else
+              repoRoot + "/sdk";
         in
         {
           default = pkgs.stdenv.mkDerivation rec {
@@ -47,7 +63,7 @@
             version = "0.1.0";
 
             # Keep entire working tree (including untracked) so new sources are present.
-            src = ./.; 
+            src = ./.;
 
             nativeBuildInputs = with pkgs; [
               cmake
@@ -56,15 +72,16 @@
               qt6.wrapQtAppsHook
             ];
 
-            buildInputs = (with pkgs.qt6; [
-              qtbase
-              qtdeclarative
-              qtsvg
-              qttools
-              qt5compat
-            ])
-            ++ (if pkgs.stdenv.isLinux then [ pkgs.qt6.qtwayland ] else [])
-            ++ [ pkgs.boost ];
+            buildInputs =
+              (with pkgs.qt6; [
+                qtbase
+                qtdeclarative
+                qtsvg
+                qttools
+                qt5compat
+              ])
+              ++ (if pkgs.stdenv.isLinux then [ pkgs.qt6.qtwayland ] else [ ])
+              ++ [ pkgs.boost ];
 
             cmakeFlags = [
               "-DSTEAMWORKS_PATH_HINT=${steamworksHint}"
@@ -88,7 +105,10 @@
           default = pkgs.mkShell {
             name = "connecttool-qt-shell";
             inputsFrom = [ self.packages.${system}.default ];
-            packages = with pkgs; [ gdb clang-tools ];
+            packages = with pkgs; [
+              gdb
+              clang-tools
+            ];
             CMAKE_EXPORT_COMPILE_COMMANDS = "1";
             shellHook = ''
               echo "Qt: $(qmake --version | grep -o 'Qt version [0-9.]*' | cut -d ' ' -f 3)"

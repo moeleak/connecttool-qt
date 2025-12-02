@@ -31,6 +31,10 @@ QVariant FriendsModel::data(const QModelIndex &index, int role) const
         return entry.displayName;
     case AvatarRole:
         return entry.avatarData;
+    case OnlineRole:
+        return entry.online;
+    case StatusRole:
+        return entry.status;
     default:
         return {};
     }
@@ -42,6 +46,8 @@ QHash<int, QByteArray> FriendsModel::roleNames() const
         {SteamIdRole, "steamId"},
         {DisplayNameRole, "displayName"},
         {AvatarRole, "avatar"},
+        {OnlineRole, "online"},
+        {StatusRole, "status"},
     };
 }
 
@@ -71,7 +77,6 @@ void FriendsModel::setFriends(std::vector<Entry> list)
             emit dataChanged(index(0, 0), index(static_cast<int>(filtered_.size()) - 1, 0));
         }
     }
-    qDebug() << "[FriendsModel] set" << entries_.size() << "rows";
 }
 
 void FriendsModel::setFilter(const QString &text)
@@ -113,6 +118,10 @@ std::vector<FriendsModel::Entry> FriendsModel::filterEntries(const std::vector<E
         }
     }
     std::stable_sort(result.begin(), result.end(), [this](const Entry &a, const Entry &b) {
+        if (a.presenceRank != b.presenceRank)
+        {
+            return a.presenceRank < b.presenceRank;
+        }
         const int sa = scoreFor(a.displayName);
         const int sb = scoreFor(b.displayName);
         if (sa != sb)

@@ -57,6 +57,16 @@ int TCPServer::getClientCount() {
     return clients_.size();
 }
 
+void TCPServer::setClientCountCallback(std::function<void(int)> callback) {
+    clientCountCallback_ = std::move(callback);
+}
+
+void TCPServer::notifyClientCount(int count) {
+    if (clientCountCallback_) {
+        clientCountCallback_(count);
+    }
+}
+
 void TCPServer::start_accept() {
     auto socket = std::make_shared<tcp::socket>(io_context_);
     acceptor_.async_accept(*socket, [this, socket](const boost::system::error_code& error) {
@@ -64,10 +74,13 @@ void TCPServer::start_accept() {
             std::cout << "New client connected" << std::endl;
             auto multiplexManager = manager_->getMessageHandler()->getMultiplexManager(manager_->getConnection());
             std::string id = multiplexManager->addClient(socket);
+            int currentCount = 0;
             {
                 std::lock_guard<std::mutex> lock(clientsMutex_);
                 clients_.push_back(socket);
+                currentCount = static_cast<int>(clients_.size());
             }
+            notifyClientCount(currentCount);
             start_read(socket, id);
         }
         if (running_) {
@@ -97,8 +110,13 @@ void TCPServer::start_read(std::shared_ptr<tcp::socket> socket, std::string id) 
                 // Remove client
                 multiplexManager->removeClient(id);
             }
-            std::lock_guard<std::mutex> lock(clientsMutex_);
-            clients_.erase(std::remove(clients_.begin(), clients_.end(), socket), clients_.end());
+            int currentCount = 0;
+            {
+                std::lock_guard<std::mutex> lock(clientsMutex_);
+                clients_.erase(std::remove(clients_.begin(), clients_.end(), socket), clients_.end());
+                currentCount = static_cast<int>(clients_.size());
+            }
+            notifyClientCount(currentCount);
         }
     });
 }

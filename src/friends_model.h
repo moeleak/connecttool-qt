@@ -16,6 +16,8 @@ public:
         SteamIdRole = Qt::UserRole + 1,
         DisplayNameRole,
         AvatarRole,
+        OnlineRole,
+        StatusRole,
     };
 
     struct Entry
@@ -23,6 +25,9 @@ public:
         QString steamId;
         QString displayName;
         QString avatarData;
+        bool online = false;
+        QString status;
+        int presenceRank = 0;
     };
 
     explicit FriendsModel(QObject *parent = nullptr);

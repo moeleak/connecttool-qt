@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "friends_model.h"
+#include "members_model.h"
 
 class SteamNetworkingManager;
 class SteamRoomManager;
@@ -25,10 +26,11 @@ class Backend : public QObject
     Q_PROPERTY(QString joinTarget READ joinTarget WRITE setJoinTarget NOTIFY joinTargetChanged)
     Q_PROPERTY(int tcpClients READ tcpClients NOTIFY serverChanged)
     Q_PROPERTY(int localPort READ localPort WRITE setLocalPort NOTIFY localPortChanged)
+    Q_PROPERTY(int localBindPort READ localBindPort WRITE setLocalBindPort NOTIFY localBindPortChanged)
     Q_PROPERTY(QVariantList friends READ friends NOTIFY friendsChanged)
     Q_PROPERTY(FriendsModel* friendsModel READ friendsModel NOTIFY friendsChanged)
     Q_PROPERTY(QString friendFilter READ friendFilter WRITE setFriendFilter NOTIFY friendFilterChanged)
-    Q_PROPERTY(QVariantList members READ members NOTIFY membersChanged)
+    Q_PROPERTY(MembersModel* membersModel READ membersModel CONSTANT)
 
 public:
     explicit Backend(QObject *parent = nullptr);
@@ -42,13 +44,15 @@ public:
     QString joinTarget() const { return joinTarget_; }
     int tcpClients() const;
     int localPort() const { return localPort_; }
+    int localBindPort() const { return localBindPort_; }
     QVariantList friends() const { return friends_; }
     FriendsModel* friendsModel() { return &friendsModel_; }
+    MembersModel* membersModel() { return &membersModel_; }
     QString friendFilter() const { return friendFilter_; }
-    QVariantList members() const { return members_; }
 
     void setJoinTarget(const QString &id);
     void setLocalPort(int port);
+    void setLocalBindPort(int port);
     void setFriendFilter(const QString &text);
 
     Q_INVOKABLE void startHosting();
@@ -62,8 +66,8 @@ signals:
     void stateChanged();
     void joinTargetChanged();
     void localPortChanged();
+    void localBindPortChanged();
     void friendsChanged();
-    void membersChanged();
     void serverChanged();
     void errorMessage(const QString &message);
     void friendFilterChanged();
@@ -89,9 +93,10 @@ private:
     QString status_;
     QString joinTarget_;
     int localPort_;
+    int localBindPort_;
     int lastTcpClients_;
     QVariantList friends_;
-    QVariantList members_;
     FriendsModel friendsModel_;
+    MembersModel membersModel_;
     QString friendFilter_;
 };

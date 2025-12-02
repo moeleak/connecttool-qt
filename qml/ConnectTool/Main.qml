@@ -155,6 +155,23 @@ ApplicationWindow {
                         onValueChanged: backend.localPort = value
                     }
 
+                    Item { width: 24; height: 1 }
+
+                    Label {
+                        text: qsTr("本地绑定端口")
+                        color: "#a7b6d8"
+                    }
+
+                    SpinBox {
+                        id: bindPortField
+                        from: 1
+                        to: 65535
+                        value: backend.localBindPort
+                        editable: true
+                        enabled: !(backend.isHost || backend.isConnected)
+                        onValueChanged: backend.localBindPort = value
+                    }
+
                     Rectangle { Layout.fillWidth: true; color: "transparent" }
 
                     Label {
@@ -210,10 +227,14 @@ ApplicationWindow {
                             Layout.fillHeight: true
                             Layout.margins: 8
                             clip: true
-                            model: backend.members
+                            model: backend.membersModel
                             spacing: 10
                             ScrollBar.vertical: ScrollBar {}
                             delegate: Rectangle {
+                                required property string displayName
+                                required property string steamId
+                                required property var ping
+                                required property string relay
                                 radius: 10
                                 color: "#162033"
                                 border.color: "#1f2f45"
@@ -229,13 +250,13 @@ ApplicationWindow {
                                         spacing: 2
                                         Layout.fillWidth: true
                                         Label {
-                                            text: modelData.name
+                                            text: displayName
                                             font.pixelSize: 16
                                             color: "#e1edff"
                                             elide: Text.ElideRight
                                         }
                                         Label {
-                                            text: qsTr("SteamID: %1").arg(modelData.id)
+                                            text: qsTr("SteamID: %1").arg(steamId)
                                             font.pixelSize: 12
                                             color: "#7f8cab"
                                             elide: Text.ElideRight
@@ -245,14 +266,14 @@ ApplicationWindow {
                                     ColumnLayout {
                                         spacing: 2
                                     Label {
-                                        text: (modelData.ping === undefined || modelData.ping === null)
+                                        text: (ping === undefined || ping === null)
                                               ? qsTr("-")
-                                              : qsTr("%1 ms").arg(modelData.ping)
+                                              : qsTr("%1 ms").arg(ping)
                                         color: "#7fded1"
                                         font.pixelSize: 14
                                     }
                                         Label {
-                                            text: modelData.relay
+                                            text: relay.length > 0 ? relay : "-"
                                             color: "#8ea4c8"
                                             font.pixelSize: 12
                                             elide: Text.ElideRight
@@ -339,6 +360,8 @@ ApplicationWindow {
                                 required property string displayName
                                 required property string steamId
                                 required property string avatar
+                                required property bool online
+                                required property string status
                                 width: friendList.width
 
                                 Component.onCompleted: {
@@ -359,47 +382,80 @@ ApplicationWindow {
                                     anchors.margins: 10
                                     spacing: 10
                                     Layout.alignment: Qt.AlignVCenter
-                                    Rectangle {
-                                        id: avatarFrame
+                                    Item {
+                                        id: avatarContainer
                                         width: 44
                                         height: 44
-                                        radius: 22
-                                        color: avatar.length > 0 ? "transparent" : "#1a2436"
-                                        border.color: avatar.length > 0 ? "transparent" : "#1f2f45"
                                         Layout.alignment: Qt.AlignVCenter
                                         Layout.preferredWidth: 44
                                         Layout.preferredHeight: 44
-                                        clip: false
-                                        layer.enabled: avatar.length > 0
-                                        layer.effect: OpacityMask {
-                                            source: avatarFrame
-                                            maskSource: Rectangle {
-                                                width: avatarFrame.width
-                                                height: avatarFrame.height
-                                                radius: avatarFrame.width / 2
-                                                color: "white"
+                                        Rectangle {
+                                            id: avatarFrame
+                                            anchors.fill: parent
+                                            radius: width / 2
+                                            color: avatar.length > 0 ? "transparent" : "#1a2436"
+                                            border.color: avatar.length > 0 ? "transparent" : "#1f2f45"
+                                            clip: false
+                                            layer.enabled: avatar.length > 0
+                                            layer.effect: OpacityMask {
+                                                source: avatarFrame
+                                                maskSource: Rectangle {
+                                                    width: avatarFrame.width
+                                                    height: avatarFrame.height
+                                                    radius: avatarFrame.width / 2
+                                                    color: "white"
+                                                }
+                                            }
+                                            Image {
+                                                anchors.fill: parent
+                                                source: avatar
+                                                visible: avatar.length > 0
+                                                fillMode: Image.PreserveAspectCrop
+                                                smooth: true
+                                            }
+                                            Label {
+                                                anchors.centerIn: parent
+                                                visible: avatar.length === 0
+                                                text: displayName.length > 0 ? displayName[0] : "?"
+                                                color: "#6f7e9c"
+                                                font.pixelSize: 16
                                             }
                                         }
-                                        Image {
-                                            anchors.fill: parent
-                                            source: avatar
-                                            visible: avatar.length > 0
-                                            fillMode: Image.PreserveAspectCrop
-                                            smooth: true
-                                        }
-                                        Label {
-                                            anchors.centerIn: parent
-                                            visible: avatar.length === 0
-                                            text: displayName.length > 0 ? displayName[0] : "?"
-                                            color: "#6f7e9c"
-                                            font.pixelSize: 16
+                                        Rectangle {
+                                            width: 12
+                                            height: 12
+                                            radius: 6
+                                            color: "#2dd6c1"
+                                            border.color: "#111827"
+                                            border.width: 2
+                                            anchors.top: parent.top
+                                            anchors.right: parent.right
+                                            anchors.margins: -2
+                                            z: 2
+                                            visible: online
                                         }
                                     }
                                     ColumnLayout {
                                         spacing: 2
                                         Layout.fillWidth: true
                                         Layout.alignment: Qt.AlignVCenter
-                                        Label { text: displayName; color: "#e1edff"; font.pixelSize: 15; elide: Text.ElideRight }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 6
+                                            Label {
+                                                text: displayName
+                                                color: "#e1edff"
+                                                font.pixelSize: 15
+                                                elide: Text.ElideRight
+                                                Layout.fillWidth: true
+                                            }
+                                            Label {
+                                                text: status
+                                                color: online ? "#2dd6c1" : "#7f8cab"
+                                                font.pixelSize: 12
+                                                visible: status.length > 0
+                                            }
+                                        }
                                         Label { text: steamId; color: "#7f8cab"; font.pixelSize: 12; elide: Text.ElideRight }
                                     }
                                     Item { Layout.fillWidth: true }

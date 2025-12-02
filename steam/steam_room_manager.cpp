@@ -79,6 +79,11 @@ void SteamMatchmakingCallbacks::OnLobbyEntered(LobbyEnter_t *pCallback)
     if (pCallback->m_EChatRoomEnterResponse == k_EChatRoomEnterResponseSuccess)
     {
         roomManager_->setCurrentLobby(pCallback->m_ulSteamIDLobby);
+        if (manager_)
+        {
+            CSteamID hostID = SteamMatchmaking()->GetLobbyOwner(pCallback->m_ulSteamIDLobby);
+            manager_->setHostSteamID(hostID);
+        }
         std::cout << "Entered lobby: " << pCallback->m_ulSteamIDLobby << std::endl;
         
         // Set Rich Presence to enable invite functionality
@@ -94,7 +99,8 @@ void SteamMatchmakingCallbacks::OnLobbyEntered(LobbyEnter_t *pCallback)
                 // Start TCP Server if dependencies are set
                 if (manager_->getServer() && !(*manager_->getServer()))
                 {
-                    *manager_->getServer() = std::make_unique<TCPServer>(8888, manager_);
+                    const int bindPort = manager_->getBindPort();
+                    *manager_->getServer() = std::make_unique<TCPServer>(bindPort, manager_);
                     if (!(*manager_->getServer())->start())
                     {
                         std::cerr << "Failed to start TCP server" << std::endl;
@@ -145,6 +151,10 @@ void SteamRoomManager::leaveLobby()
     {
         SteamMatchmaking()->LeaveLobby(currentLobby);
         currentLobby = k_steamIDNil;
+        if (networkingManager_)
+        {
+            networkingManager_->setHostSteamID(CSteamID());
+        }
         
         // Clear Rich Presence when leaving lobby
         SteamFriends()->ClearRichPresence();

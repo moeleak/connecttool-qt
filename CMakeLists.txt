@@ -12,8 +12,17 @@ qt_standard_project_setup()
 qt_policy(SET QTP0004 NEW)
 qt_policy(SET QTP0001 NEW)
 
-set(STEAMWORKS_PATH_HINT "${CMAKE_SOURCE_DIR}/steamworks" CACHE PATH "Path to the Steamworks SDK (contains public/ and redistributable_bin)")
-set(STEAMWORKS_SDK_DIR "${CMAKE_SOURCE_DIR}/sdk" CACHE PATH "Optional fallback Steamworks SDK path")
+set(_default_steamworks_path "${CMAKE_SOURCE_DIR}/steamworks")
+if(NOT EXISTS "${_default_steamworks_path}" AND EXISTS "${CMAKE_SOURCE_DIR}/../steamworks")
+    set(_default_steamworks_path "${CMAKE_SOURCE_DIR}/../steamworks")
+endif()
+set(STEAMWORKS_PATH_HINT "${_default_steamworks_path}" CACHE PATH "Path to the Steamworks SDK (contains public/ and redistributable_bin)")
+
+set(_default_sdk_path "${CMAKE_SOURCE_DIR}/sdk")
+if(NOT EXISTS "${_default_sdk_path}" AND EXISTS "${CMAKE_SOURCE_DIR}/../sdk")
+    set(_default_sdk_path "${CMAKE_SOURCE_DIR}/../sdk")
+endif()
+set(STEAMWORKS_SDK_DIR "${_default_sdk_path}" CACHE PATH "Optional fallback Steamworks SDK path")
 
 set(_steam_include_hints
     ${STEAMWORKS_PATH_HINT}/public
@@ -71,6 +80,7 @@ add_executable(connecttool-qt
     src/main.cpp
     src/backend.cpp
     src/friends_model.cpp
+    src/members_model.cpp
     net/multiplex_manager.cpp
     net/tcp_server.cpp
     steam/steam_message_handler.cpp

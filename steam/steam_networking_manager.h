@@ -51,12 +51,13 @@ public:
     // For SteamRoomManager access
     std::unique_ptr<TCPServer>*& getServer() { return server_; }
     int*& getLocalPort() { return localPort_; }
+    int getBindPort() const { return localBindPort_ ? *localBindPort_ : 8888; }
     boost::asio::io_context*& getIOContext() { return io_context_; }
     HSteamListenSocket& getListenSock() { return hListenSock; }
     ISteamNetworkingSockets* getInterface() { return m_pInterface; }
     bool& getIsHost() { return g_isHost; }
 
-    void setMessageHandlerDependencies(boost::asio::io_context& io_context, std::unique_ptr<TCPServer>& server, int& localPort);
+    void setMessageHandlerDependencies(boost::asio::io_context& io_context, std::unique_ptr<TCPServer>& server, int& localPort, int& localBindPort);
 
     // Message handler
     void startMessageHandler();
@@ -96,6 +97,7 @@ private:
     boost::asio::io_context* io_context_;
     std::unique_ptr<TCPServer>* server_;
     int* localPort_;
+    int* localBindPort_;
     SteamMessageHandler* messageHandler_;
 
     // Callback

@@ -58,7 +58,9 @@ std::vector<SteamUtils::FriendInfo> SteamUtils::getFriendsList()
         CSteamID friendID = SteamFriends()->GetFriendByIndex(i, k_EFriendFlagAll);
         const char *name = SteamFriends()->GetFriendPersonaName(friendID);
         std::string avatar = buildAvatarDataUrl(SteamFriends()->GetSmallFriendAvatar(friendID));
-        friendsList.push_back({friendID, name ? name : "", std::move(avatar)});
+        EPersonaState persona = SteamFriends()->GetFriendPersonaState(friendID);
+        const bool isOnline = persona != k_EPersonaStateOffline && persona != k_EPersonaStateInvisible;
+        friendsList.push_back({friendID, name ? name : "", std::move(avatar), persona, isOnline});
     }
     return friendsList;
 }

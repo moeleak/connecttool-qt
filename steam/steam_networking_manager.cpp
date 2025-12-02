@@ -16,7 +16,7 @@ void SteamNetworkingManager::OnSteamNetConnectionStatusChanged(SteamNetConnectio
 SteamNetworkingManager::SteamNetworkingManager()
     : m_pInterface(nullptr), hListenSock(k_HSteamListenSocket_Invalid), g_isHost(false), g_isClient(false), g_isConnected(false),
       g_hConnection(k_HSteamNetConnection_Invalid),
-      io_context_(nullptr), server_(nullptr), localPort_(nullptr), messageHandler_(nullptr), hostPing_(0)
+      io_context_(nullptr), server_(nullptr), localPort_(nullptr), localBindPort_(nullptr), messageHandler_(nullptr), hostPing_(0)
 {
 }
 
@@ -164,11 +164,12 @@ void SteamNetworkingManager::disconnect()
     std::cout << "Disconnected from network" << std::endl;
 }
 
-void SteamNetworkingManager::setMessageHandlerDependencies(boost::asio::io_context &io_context, std::unique_ptr<TCPServer> &server, int &localPort)
+void SteamNetworkingManager::setMessageHandlerDependencies(boost::asio::io_context &io_context, std::unique_ptr<TCPServer> &server, int &localPort, int &localBindPort)
 {
     io_context_ = &io_context;
     server_ = &server;
     localPort_ = &localPort;
+    localBindPort_ = &localBindPort;
     messageHandler_ = new SteamMessageHandler(io_context, m_pInterface, connections, connectionsMutex, g_isHost, localPort);
 }
 

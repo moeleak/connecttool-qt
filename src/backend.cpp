@@ -9,11 +9,46 @@
 #include <QQmlEngine>
 #include <QtDebug>
 #include <QVariantMap>
+#include <QMetaObject>
 #include <algorithm>
 #include <mutex>
 
+namespace
+{
+struct PersonaDisplay
+{
+    QString label;
+    bool online;
+    int priority;
+};
+
+PersonaDisplay personaStateDisplay(EPersonaState state)
+{
+    switch (state)
+    {
+    case k_EPersonaStateOnline:
+        return {QCoreApplication::translate("Backend", "在线"), true, 0};
+    case k_EPersonaStateBusy:
+        return {QCoreApplication::translate("Backend", "忙碌"), true, 1};
+    case k_EPersonaStateLookingToPlay:
+        return {QCoreApplication::translate("Backend", "想游戏"), true, 2};
+    case k_EPersonaStateLookingToTrade:
+        return {QCoreApplication::translate("Backend", "想交易"), true, 3};
+    case k_EPersonaStateSnooze:
+        return {QCoreApplication::translate("Backend", "小憩"), true, 4};
+    case k_EPersonaStateAway:
+        return {QCoreApplication::translate("Backend", "离开"), true, 5};
+    case k_EPersonaStateInvisible:
+        return {QCoreApplication::translate("Backend", "隐身"), false, 7};
+    case k_EPersonaStateOffline:
+    default:
+        return {QCoreApplication::translate("Backend", "离线"), false, 8};
+    }
+}
+} // namespace
+
 Backend::Backend(QObject *parent)
-    : QObject(parent), steamReady_(false), localPort_(25565), lastTcpClients_(0)
+    : QObject(parent), steamReady_(false), localPort_(25565), localBindPort_(8888), lastTcpClients_(0)
 {
     // Set a default app id so Steam can bootstrap in development environments
     qputenv("SteamAppId", QByteArray("480"));
@@ -39,7 +74,7 @@ Backend::Backend(QObject *parent)
     workGuard_ = std::make_unique<boost::asio::executor_work_guard<boost::asio::io_context::executor_type>>(boost::asio::make_work_guard(ioContext_));
     ioThread_ = std::thread([this]() { ioContext_.run(); });
 
-    steamManager_->setMessageHandlerDependencies(ioContext_, server_, localPort_);
+    steamManager_->setMessageHandlerDependencies(ioContext_, server_, localPort_, localBindPort_);
     steamManager_->startMessageHandler();
 
     connect(&callbackTimer_, &QTimer::timeout, this, &Backend::tick);
@@ -131,6 +166,17 @@ void Backend::setLocalPort(int port)
     emit localPortChanged();
 }
 
+void Backend::setLocalBindPort(int port)
+{
+    port = std::clamp(port, 1, 65535);
+    if (localBindPort_ == port)
+    {
+        return;
+    }
+    localBindPort_ = port;
+    emit localBindPortChanged();
+}
+
 bool Backend::ensureSteamReady(const QString &actionLabel)
 {
     if (steamReady_)
@@ -175,11 +221,19 @@ void Backend::ensureServerRunning()
     {
         return;
     }
-    server_ = std::make_unique<TCPServer>(8888, steamManager_.get());
+    server_ = std::make_unique<TCPServer>(localBindPort_, steamManager_.get());
+    server_->setClientCountCallback([this](int count) {
+        QMetaObject::invokeMethod(this, [this, count]() {
+            lastTcpClients_ = count;
+            emit serverChanged();
+            updateStatus();
+        }, Qt::QueuedConnection);
+    });
     if (!server_->start())
     {
         emit errorMessage(tr("启动本地 TCP 服务器失败。"));
         server_.reset();
+        lastTcpClients_ = 0;
     }
     emit serverChanged();
 }
@@ -234,6 +288,7 @@ void Backend::disconnect()
     {
         server_->stop();
         server_.reset();
+        lastTcpClients_ = 0;
         emit serverChanged();
     }
     updateMembersList();
@@ -244,7 +299,6 @@ void Backend::refreshFriends()
 {
     if (!steamReady_ || !steamManager_)
     {
-        qDebug() << "[Friends] skip refresh - steam not ready";
         return;
     }
     QVariantList updated;
@@ -255,20 +309,19 @@ void Backend::refreshFriends()
         const QString steamId = QString::number(friendInfo.id.ConvertToUint64());
         const QString displayName = QString::fromStdString(friendInfo.name);
         const QString avatar = QString::fromStdString(friendInfo.avatarDataUrl);
+        const PersonaDisplay persona = personaStateDisplay(friendInfo.personaState);
 
         QVariantMap entry;
         entry.insert(QStringLiteral("id"), steamId);
         entry.insert(QStringLiteral("name"), displayName);
+        entry.insert(QStringLiteral("status"), persona.label);
+        entry.insert(QStringLiteral("online"), persona.online);
         if (!avatar.isEmpty())
         {
             entry.insert(QStringLiteral("avatar"), avatar);
         }
         updated.push_back(entry);
-        modelData.push_back({steamId, displayName, avatar});
-        if (idx < 3)
-        {
-            qDebug() << "[Friends] sample" << idx << entry;
-        }
+        modelData.push_back({steamId, displayName, avatar, persona.online, persona.label, persona.priority});
         ++idx;
     }
     friendsModel_.setFriends(std::move(modelData));
@@ -277,7 +330,6 @@ void Backend::refreshFriends()
         friends_ = updated;
         emit friendsChanged();
     }
-    qDebug() << "[Friends] fetched" << updated.size() << "entries";
 }
 
 void Backend::setFriendFilter(const QString &text)
@@ -378,72 +430,65 @@ void Backend::updateMembersList()
 {
     if (!steamReady_ || !steamManager_ || !roomManager_)
     {
-        if (!members_.isEmpty())
-        {
-            members_.clear();
-            emit membersChanged();
-        }
+        membersModel_.setMembers({});
         return;
     }
 
-    QVariantList updated;
-    if ((isHost() || isConnected()) && roomManager_->getCurrentLobby().IsValid())
+    CSteamID currentLobby = roomManager_->getCurrentLobby();
+    if (!currentLobby.IsValid())
     {
-        std::vector<CSteamID> lobbyMembers = roomManager_->getLobbyMembers();
-        CSteamID myId = SteamUser()->GetSteamID();
-        CSteamID hostId = steamManager_->getHostSteamID();
+        membersModel_.setMembers({});
+        return;
+    }
 
-        for (const auto &memberId : lobbyMembers)
+    std::vector<CSteamID> lobbyMembers = roomManager_->getLobbyMembers();
+    std::vector<MembersModel::Entry> entries;
+    entries.reserve(lobbyMembers.size());
+
+    CSteamID myId = SteamUser()->GetSteamID();
+    CSteamID hostId = steamManager_->getHostSteamID();
+
+    for (const auto &memberId : lobbyMembers)
+    {
+        MembersModel::Entry entry;
+        entry.steamId = QString::number(memberId.ConvertToUint64());
+        entry.displayName = QString::fromUtf8(SteamFriends()->GetFriendPersonaName(memberId));
+        entry.relay = QStringLiteral("-");
+        entry.ping = -1;
+
+        if (memberId == myId)
         {
-            QVariantMap entry;
-            entry.insert(QStringLiteral("id"), QString::number(memberId.ConvertToUint64()));
-            entry.insert(QStringLiteral("name"), QString::fromUtf8(SteamFriends()->GetFriendPersonaName(memberId)));
-
-            if (memberId == myId)
-            {
-                entry.insert(QStringLiteral("ping"), QVariant());
-                entry.insert(QStringLiteral("relay"), tr("本机"));
-            }
-            else
-            {
-                int ping = 0;
-                std::string relayInfo = "-";
-
-                std::lock_guard<std::mutex> lock(steamManager_->getConnectionsMutex());
-                if (isHost())
-                {
-                    for (const auto &conn : steamManager_->getConnections())
-                    {
-                        SteamNetConnectionInfo_t info;
-                        if (steamManager_->getInterface()->GetConnectionInfo(conn, &info) &&
-                            info.m_identityRemote.GetSteamID() == memberId)
-                        {
-                            ping = steamManager_->getConnectionPing(conn);
-                            relayInfo = steamManager_->getConnectionRelayInfo(conn);
-                            break;
-                        }
-                    }
-                }
-                else if (memberId == hostId)
-                {
-                    ping = steamManager_->getHostPing();
-                    if (steamManager_->getConnection() != k_HSteamNetConnection_Invalid)
-                    {
-                        relayInfo = steamManager_->getConnectionRelayInfo(steamManager_->getConnection());
-                    }
-                }
-
-                entry.insert(QStringLiteral("ping"), ping > 0 ? ping : QVariant());
-                entry.insert(QStringLiteral("relay"), QString::fromStdString(relayInfo));
-            }
-
-            updated.push_back(entry);
+            entry.relay = tr("本机");
         }
+        else
+        {
+            if (isHost())
+            {
+                std::lock_guard<std::mutex> lock(steamManager_->getConnectionsMutex());
+                for (const auto &conn : steamManager_->getConnections())
+                {
+                    SteamNetConnectionInfo_t info;
+                    if (steamManager_->getInterface()->GetConnectionInfo(conn, &info) &&
+                        info.m_identityRemote.GetSteamID() == memberId)
+                    {
+                        entry.ping = steamManager_->getConnectionPing(conn);
+                        entry.relay = QString::fromStdString(steamManager_->getConnectionRelayInfo(conn));
+                        break;
+                    }
+                }
+            }
+            else if (hostId.IsValid() && memberId == hostId)
+            {
+                entry.ping = steamManager_->getHostPing();
+                if (steamManager_->getConnection() != k_HSteamNetConnection_Invalid)
+                {
+                    entry.relay = QString::fromStdString(steamManager_->getConnectionRelayInfo(steamManager_->getConnection()));
+                }
+            }
+        }
+
+        entries.push_back(std::move(entry));
     }
 
-    if (updated != members_)
-    {
-        members_ = updated;
-        emit membersChanged();
-    }
+    membersModel_.setMembers(std::move(entries));
 }

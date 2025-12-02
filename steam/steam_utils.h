@@ -10,6 +10,8 @@ public:
         CSteamID id;
         std::string name;
         std::string avatarDataUrl;
+        EPersonaState personaState;
+        bool online;
     };
 
     static std::vector<FriendInfo> getFriendsList();

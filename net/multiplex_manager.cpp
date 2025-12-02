@@ -1,9 +1,12 @@
 #include "multiplex_manager.h"
+#include <algorithm>
 #include <cstring>
 #include <iostream>
 #include <random>
 
 namespace {
+constexpr std::size_t kTunnelChunkBytes = 60 * 1024;
+
 // Simple, local ID generator to avoid pulling in the full nanoid dependency
 std::string generateId(std::size_t length = 6)
 {
@@ -77,20 +80,47 @@ std::shared_ptr<tcp::socket> MultiplexManager::getClient(const std::string &id)
     return nullptr;
 }
 
-void MultiplexManager::sendTunnelPacket(const std::string &id, const char *data, size_t len, int type)
+namespace
 {
-    // Packet format: string id (6 chars + null), uint32_t type, then data if type==0
-    size_t idLen = id.size() + 1; // include null terminator
-    size_t packetSize = idLen + sizeof(uint32_t) + (type == 0 ? len : 0);
+
+void sendPacketInternal(ISteamNetworkingSockets *iface,
+                        HSteamNetConnection conn,
+                        const std::string &id,
+                        const char *data,
+                        size_t len,
+                        int type)
+{
+    const size_t idLen = id.size() + 1;
+    const size_t payloadLen = (type == 0 ? len : 0);
+    const size_t packetSize = idLen + sizeof(uint32_t) + payloadLen;
     std::vector<char> packet(packetSize);
     std::memcpy(&packet[0], id.c_str(), idLen);
-    uint32_t *pType = reinterpret_cast<uint32_t *>(&packet[idLen]);
+    auto *pType = reinterpret_cast<uint32_t *>(&packet[idLen]);
     *pType = type;
-    if (type == 0 && data)
+    if (payloadLen > 0 && data)
     {
-        std::memcpy(&packet[idLen + sizeof(uint32_t)], data, len);
+        std::memcpy(&packet[idLen + sizeof(uint32_t)], data, payloadLen);
     }
-    steamInterface_->SendMessageToConnection(steamConn_, packet.data(), packet.size(), k_nSteamNetworkingSend_Reliable, nullptr);
+    iface->SendMessageToConnection(conn, packet.data(), packet.size(), k_nSteamNetworkingSend_Reliable, nullptr);
+}
+
+} // namespace
+
+void MultiplexManager::sendTunnelPacket(const std::string &id, const char *data, size_t len, int type)
+{
+    if (type == 0 && data && len > kTunnelChunkBytes)
+    {
+        size_t offset = 0;
+        while (offset < len)
+        {
+            const size_t chunk = std::min(kTunnelChunkBytes, len - offset);
+            sendPacketInternal(steamInterface_, steamConn_, id, data + offset, chunk, 0);
+            offset += chunk;
+        }
+        return;
+    }
+
+    sendPacketInternal(steamInterface_, steamConn_, id, data, len, type);
 }
 
 void MultiplexManager::handleTunnelPacket(const char *data, size_t len)
