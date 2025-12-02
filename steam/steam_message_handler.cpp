@@ -46,9 +46,6 @@ void SteamMessageHandler::startAsyncPoll() {
   if (!running_)
     return;
 
-  // Poll networking callbacks
-  m_pInterface_->RunCallbacks();
-
   // Receive messages and check if any were received
   int totalMessages = 0;
   std::vector<HSteamNetConnection> currentConnections;

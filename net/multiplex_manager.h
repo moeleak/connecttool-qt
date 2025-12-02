@@ -47,6 +47,7 @@ private:
     bool flushScheduled_ = false;
 
     void startAsyncRead(const std::string& id);
+    void sendTunnelPacketImpl(const std::string &id, const char *data, size_t len, int type);
     std::vector<char> buildPacket(const std::string &id, const char *data, size_t len, int type) const;
     bool trySendPacket(const std::vector<char> &packet);
     void enqueuePacket(const std::string &id, std::vector<char> packet);

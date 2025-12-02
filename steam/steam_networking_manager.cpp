@@ -1,5 +1,6 @@
 #include "steam_networking_manager.h"
 #include <algorithm>
+#include <cstdio>
 #include <iostream>
 
 SteamNetworkingManager *SteamNetworkingManager::instance = nullptr;
@@ -34,14 +35,15 @@ bool SteamNetworkingManager::initialize() {
     return false;
   }
 
-  // 【新增】开启详细日志
+  // Route Steam networking logs to stderr and keep them lightweight to avoid
+  // stalling the service thread.
   SteamNetworkingUtils()->SetDebugOutputFunction(
-      k_ESteamNetworkingSocketsDebugOutputType_Msg,
+      k_ESteamNetworkingSocketsDebugOutputType_Warning,
       [](ESteamNetworkingSocketsDebugOutputType nType, const char *pszMsg) {
-        std::cout << "[SteamNet] " << pszMsg << std::endl;
+        std::fprintf(stderr, "[SteamNet][%d] %s\n", nType, pszMsg);
       });
 
-  int32 logLevel = k_ESteamNetworkingSocketsDebugOutputType_Verbose;
+  int32 logLevel = k_ESteamNetworkingSocketsDebugOutputType_Warning;
   SteamNetworkingUtils()->SetConfigValue(
       k_ESteamNetworkingConfig_LogLevel_P2PRendezvous,
       k_ESteamNetworkingConfig_Global, 0, k_ESteamNetworkingConfig_Int32,

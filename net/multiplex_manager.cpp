@@ -255,6 +255,27 @@ void MultiplexManager::scheduleFlush(std::chrono::milliseconds delay) {
 
 void MultiplexManager::sendTunnelPacket(const std::string &id, const char *data,
                                         size_t len, int type) {
+  // Ensure all SteamNetworkingSockets calls run on the io_context thread to
+  // avoid cross-thread lock contention inside the Steam socket layer.
+  if (!io_context_.get_executor().running_in_this_thread()) {
+    std::shared_ptr<std::vector<char>> payload;
+    if (type == 0 && data && len > 0) {
+      payload = std::make_shared<std::vector<char>>(data, data + len);
+    }
+    boost::asio::post(io_context_, [this, id, type, payload, len]() {
+      const char *ptr = payload ? payload->data() : nullptr;
+      const size_t size = payload ? payload->size() : len;
+      sendTunnelPacketImpl(id, ptr, size, type);
+    });
+    return;
+  }
+
+  sendTunnelPacketImpl(id, data, len, type);
+}
+
+void MultiplexManager::sendTunnelPacketImpl(const std::string &id,
+                                            const char *data, size_t len,
+                                            int type) {
   bool blocked = false;
   auto pushPacket = [this, &id, &blocked](const char *ptr, size_t amount,
                                           int packetType) {
