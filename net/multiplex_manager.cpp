@@ -6,7 +6,10 @@
 #include <random>
 
 namespace {
-constexpr std::size_t kTunnelChunkBytes = 60 * 1024;
+constexpr std::size_t kTunnelChunkBytes = 32 * 1024;
+constexpr std::size_t kSendBufferBytes = 8 * 1024 * 1024;
+constexpr std::size_t kHighWaterBytes = 6 * 1024 * 1024; // throttle before Steam limits
+constexpr std::size_t kLowWaterBytes = 4 * 1024 * 1024;
 
 // Simple, local ID generator to avoid pulling in the full nanoid dependency
 std::string generateId(std::size_t length = 6) {
@@ -70,13 +73,25 @@ bool MultiplexManager::removeClient(const std::string &id) {
   }
   readBuffers_.erase(id);
   missingClients_.erase(id);
+  {
+    std::lock_guard<std::mutex> lock(pausedMutex_);
+    pausedReads_.erase(id);
+  }
 
   if (removed) {
     std::cout << "Removed client with id " << id << std::endl;
   }
+  bool shouldResume = false;
   {
     std::lock_guard<std::mutex> queueLock(queueMutex_);
     pendingPackets_.erase(id);
+    if (pendingPackets_.empty()) {
+      sendBlocked_.store(false, std::memory_order_relaxed);
+      shouldResume = true;
+    }
+  }
+  if (shouldResume) {
+    resumePausedReads();
   }
   return removed;
 }
@@ -111,13 +126,22 @@ bool MultiplexManager::trySendPacket(const std::vector<char> &packet) {
   if (packet.empty()) {
     return true;
   }
+  if (isSendSaturated()) {
+    return false;
+  }
   EResult result = steamInterface_->SendMessageToConnection(
       steamConn_, packet.data(), static_cast<uint32>(packet.size()),
       k_nSteamNetworkingSend_Reliable, nullptr);
   if (result == k_EResultOK) {
+    backoffMs_.store(5, std::memory_order_relaxed);
     return true;
   }
   if (result == k_EResultLimitExceeded) {
+    lastBlocked_ = std::chrono::steady_clock::now();
+    int current = backoffMs_.load(std::memory_order_relaxed);
+    int next = std::min(current * 2, 100);
+    backoffMs_.store(next, std::memory_order_relaxed);
+    sendBlocked_.store(true, std::memory_order_relaxed);
     return false;
   }
 
@@ -138,6 +162,10 @@ void MultiplexManager::enqueuePacket(const std::string &id,
 }
 
 void MultiplexManager::flushPendingPackets() {
+  if (isSendSaturated()) {
+    return;
+  }
+
   std::unique_lock<std::mutex> lock(queueMutex_);
   for (auto it = pendingPackets_.begin(); it != pendingPackets_.end();) {
     auto &queue = it->second;
@@ -147,6 +175,7 @@ void MultiplexManager::flushPendingPackets() {
       const bool sent = trySendPacket(packet);
       lock.lock();
       if (!sent) {
+        sendBlocked_.store(true, std::memory_order_relaxed);
         return;
       }
       queue.pop_front();
@@ -157,13 +186,16 @@ void MultiplexManager::flushPendingPackets() {
       ++it;
     }
   }
+  sendBlocked_.store(false, std::memory_order_relaxed);
+  lock.unlock();
+  resumePausedReads();
 }
 
-void MultiplexManager::scheduleFlush() {
+void MultiplexManager::scheduleFlush(std::chrono::milliseconds delay) {
   bool needSchedule = false;
   {
     std::lock_guard<std::mutex> lock(queueMutex_);
-    if (!flushScheduled_) {
+    if (!flushScheduled_ && !pendingPackets_.empty()) {
       flushScheduled_ = true;
       needSchedule = true;
     }
@@ -172,29 +204,47 @@ void MultiplexManager::scheduleFlush() {
     return;
   }
 
-  sendTimer_->expires_after(std::chrono::milliseconds(5));
+  auto nextDelay = delay;
+  if (sendBlocked_.load(std::memory_order_relaxed)) {
+    nextDelay = std::max(nextDelay,
+                         std::chrono::milliseconds(backoffMs_.load()));
+  }
+
+  sendTimer_->expires_after(nextDelay);
   sendTimer_->async_wait([this](const boost::system::error_code &ec) {
     if (!ec) {
       flushPendingPackets();
     }
     bool shouldReschedule = false;
+    auto rescheduleDelay = std::chrono::milliseconds(5);
     {
       std::lock_guard<std::mutex> lock(queueMutex_);
       flushScheduled_ = false;
       shouldReschedule = !pendingPackets_.empty();
+      if (sendBlocked_.load(std::memory_order_relaxed)) {
+        rescheduleDelay =
+            std::chrono::milliseconds(backoffMs_.load(std::memory_order_relaxed));
+      }
     }
     if (shouldReschedule) {
-      scheduleFlush();
+      scheduleFlush(rescheduleDelay);
     }
   });
 }
 
 void MultiplexManager::sendTunnelPacket(const std::string &id, const char *data,
                                         size_t len, int type) {
-  auto pushPacket = [this, &id](const char *ptr, size_t amount,
-                                int packetType) {
+  bool blocked = false;
+  auto pushPacket = [this, &id, &blocked](const char *ptr, size_t amount,
+                                          int packetType) {
     auto packet = buildPacket(id, ptr, amount, packetType);
+    if (blocked || isSendSaturated()) {
+      blocked = true;
+      enqueuePacket(id, std::move(packet));
+      return;
+    }
     if (!trySendPacket(packet)) {
+      blocked = true;
       enqueuePacket(id, std::move(packet));
     }
   };
@@ -206,10 +256,14 @@ void MultiplexManager::sendTunnelPacket(const std::string &id, const char *data,
       pushPacket(data + offset, chunk, 0);
       offset += chunk;
     }
-    return;
+  } else {
+    pushPacket(data, len, type);
   }
 
-  pushPacket(data, len, type);
+  if (blocked) {
+    sendBlocked_.store(true, std::memory_order_relaxed);
+    lastBlocked_ = std::chrono::steady_clock::now();
+  }
 }
 
 void MultiplexManager::handleTunnelPacket(const char *data, size_t len) {
@@ -296,6 +350,11 @@ void MultiplexManager::startAsyncRead(const std::string &id) {
         if (!ec) {
           if (bytes_transferred > 0) {
             sendTunnelPacket(id, readBuffers_[id].data(), bytes_transferred, 0);
+            if (sendBlocked_.load(std::memory_order_relaxed)) {
+              std::lock_guard<std::mutex> lock(pausedMutex_);
+              pausedReads_.insert(id);
+              return;
+            }
           }
           startAsyncRead(id);
         } else {
@@ -304,4 +363,48 @@ void MultiplexManager::startAsyncRead(const std::string &id) {
           removeClient(id);
         }
       });
+}
+
+void MultiplexManager::resumePausedReads() {
+  std::vector<std::string> toResume;
+  {
+    std::lock_guard<std::mutex> lock(pausedMutex_);
+    toResume.assign(pausedReads_.begin(), pausedReads_.end());
+    pausedReads_.clear();
+  }
+  for (const auto &pausedId : toResume) {
+    startAsyncRead(pausedId);
+  }
+}
+
+bool MultiplexManager::isSendSaturated() {
+  if (sendBlocked_.load(std::memory_order_relaxed)) {
+    auto elapsed = std::chrono::steady_clock::now() - lastBlocked_;
+    if (elapsed < std::chrono::milliseconds(backoffMs_.load())) {
+      return true;
+    }
+    // Time to retry; keep going but do not clear the flag yet until we send.
+  }
+
+  SteamNetConnectionRealTimeStatus_t status{};
+  if (steamInterface_->GetConnectionRealTimeStatus(steamConn_, &status, 0,
+                                                   nullptr)) {
+    const std::size_t pending =
+        static_cast<std::size_t>(status.m_cbPendingReliable);
+    if (pending >= kHighWaterBytes) {
+      lastBlocked_ = std::chrono::steady_clock::now();
+      int current = backoffMs_.load(std::memory_order_relaxed);
+      int next = std::min(current * 2, 200);
+      backoffMs_.store(next, std::memory_order_relaxed);
+      sendBlocked_.store(true, std::memory_order_relaxed);
+      return true;
+    }
+    if (pending <= kLowWaterBytes) {
+      sendBlocked_.store(false, std::memory_order_relaxed);
+      backoffMs_.store(5, std::memory_order_relaxed);
+      return false;
+    }
+  }
+
+  return sendBlocked_.load(std::memory_order_relaxed);
 }

@@ -47,6 +47,13 @@ bool SteamNetworkingManager::initialize() {
       k_ESteamNetworkingConfig_Global, 0, k_ESteamNetworkingConfig_Int32,
       &logLevel);
 
+  // Increase default reliable send buffer to better handle large bursts
+  int32 sendBufferSize = 8 * 1024 * 1024;
+  SteamNetworkingUtils()->SetConfigValue(
+      k_ESteamNetworkingConfig_SendBufferSize,
+      k_ESteamNetworkingConfig_Global, 0, k_ESteamNetworkingConfig_Int32,
+      &sendBufferSize);
+
   // 1. 允许 P2P (ICE) 直连
   // 默认情况下 Steam 可能会保守地只允许 LAN，这里设置为 "All" 允许公网 P2P
   int32 nIceEnable = k_nSteamNetworkingConfig_P2P_Transport_ICE_Enable_Public |

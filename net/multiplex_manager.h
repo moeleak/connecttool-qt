@@ -1,5 +1,7 @@
 #pragma once
 
+#include <atomic>
+#include <chrono>
 #include <unordered_map>
 #include <unordered_set>
 #include <deque>
@@ -49,5 +51,13 @@ private:
     bool trySendPacket(const std::vector<char> &packet);
     void enqueuePacket(const std::string &id, std::vector<char> packet);
     void flushPendingPackets();
-    void scheduleFlush();
+    void scheduleFlush(std::chrono::milliseconds delay = std::chrono::milliseconds(5));
+    void resumePausedReads();
+    bool isSendSaturated();
+
+    std::atomic<bool> sendBlocked_{false};
+    std::atomic<int> backoffMs_{5};
+    std::chrono::steady_clock::time_point lastBlocked_;
+    std::unordered_set<std::string> pausedReads_;
+    std::mutex pausedMutex_;
 };
