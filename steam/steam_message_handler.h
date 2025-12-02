@@ -3,7 +3,6 @@
 
 #include "../net/multiplex_manager.h"
 #include "../net/tcp_server.h"
-#include "../net/udp_discovery_bridge.h"
 #include <boost/asio.hpp>
 #include <map>
 #include <memory>
@@ -26,8 +25,6 @@ public:
 
   std::shared_ptr<MultiplexManager>
   getMultiplexManager(HSteamNetConnection conn);
-  std::shared_ptr<UdpDiscoveryBridge>
-  getUdpBridge(HSteamNetConnection conn);
 
 private:
   void startAsyncPoll();
@@ -41,8 +38,6 @@ private:
 
   std::map<HSteamNetConnection, std::shared_ptr<MultiplexManager>>
       multiplexManagers_;
-  std::map<HSteamNetConnection, std::shared_ptr<UdpDiscoveryBridge>>
-      udpBridges_;
 
   std::unique_ptr<boost::asio::steady_timer> timer_;
   bool running_;

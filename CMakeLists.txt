@@ -73,7 +73,6 @@ add_executable(connecttool-qt
     src/friends_model.cpp
     src/members_model.cpp
     net/multiplex_manager.cpp
-    net/udp_discovery_bridge.cpp
     net/tcp_server.cpp
     steam/steam_message_handler.cpp
     steam/steam_networking_manager.cpp
