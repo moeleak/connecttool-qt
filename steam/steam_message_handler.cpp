@@ -35,11 +35,27 @@ void SteamMessageHandler::stop() {
 
 std::shared_ptr<MultiplexManager>
 SteamMessageHandler::getMultiplexManager(HSteamNetConnection conn) {
-  if (multiplexManagers_.find(conn) == multiplexManagers_.end()) {
-    multiplexManagers_[conn] = std::make_shared<MultiplexManager>(
+  auto it = multiplexManagers_.find(conn);
+  if (it == multiplexManagers_.end()) {
+    auto manager = std::make_shared<MultiplexManager>(
         m_pInterface_, conn, io_context_, g_isHost_, localPort_);
+    multiplexManagers_[conn] = manager;
+    return manager;
   }
-  return multiplexManagers_[conn];
+  return it->second;
+}
+
+std::shared_ptr<UdpDiscoveryBridge>
+SteamMessageHandler::getUdpBridge(HSteamNetConnection conn) {
+  auto it = udpBridges_.find(conn);
+  if (it == udpBridges_.end()) {
+    auto bridge = std::make_shared<UdpDiscoveryBridge>(
+        io_context_, m_pInterface_, conn, g_isHost_);
+    bridge->start();
+    udpBridges_[conn] = bridge;
+    return bridge;
+  }
+  return it->second;
 }
 
 void SteamMessageHandler::startAsyncPoll() {
@@ -57,6 +73,9 @@ void SteamMessageHandler::startAsyncPoll() {
     currentConnections = connections_;
   }
   for (auto conn : currentConnections) {
+    // Ensure UDP discovery bridge exists and is running for this connection
+    getUdpBridge(conn);
+
     ISteamNetworkingMessage *pIncomingMsgs[10];
     int numMsgs =
         m_pInterface_->ReceiveMessagesOnConnection(conn, pIncomingMsgs, 10);
@@ -65,12 +84,13 @@ void SteamMessageHandler::startAsyncPoll() {
       ISteamNetworkingMessage *pIncomingMsg = pIncomingMsgs[i];
       const char *data = (const char *)pIncomingMsg->m_pData;
       size_t size = pIncomingMsg->m_cbSize;
-      // Handle tunnel packets with multiplexing
-      if (multiplexManagers_.find(conn) == multiplexManagers_.end()) {
-        multiplexManagers_[conn] = std::make_shared<MultiplexManager>(
-            m_pInterface_, conn, io_context_, g_isHost_, localPort_);
+      // UDP LAN discovery bridge
+      if (size >= 4 && std::memcmp(data, "UDPB", 4) == 0) {
+        getUdpBridge(conn)->handleFromSteam(data, size);
+      } else {
+        // Handle tunnel packets with multiplexing
+        getMultiplexManager(conn)->handleTunnelPacket(data, size);
       }
-      multiplexManagers_[conn]->handleTunnelPacket(data, size);
       pIncomingMsg->Release();
     }
   }
