@@ -85,6 +85,7 @@ bool MultiplexManager::removeClient(const std::string &id) {
   {
     std::lock_guard<std::mutex> queueLock(queueMutex_);
     pendingPackets_.erase(id);
+    removeFromOrder(id);
     if (pendingPackets_.empty()) {
       sendBlocked_.store(false, std::memory_order_relaxed);
       shouldResume = true;
@@ -156,7 +157,14 @@ void MultiplexManager::enqueuePacket(const std::string &id,
                                      std::vector<char> packet) {
   {
     std::lock_guard<std::mutex> lock(queueMutex_);
-    pendingPackets_[id].push_back(std::move(packet));
+    auto &queue = pendingPackets_[id];
+    const bool wasEmpty = queue.empty();
+    queue.push_back(std::move(packet));
+    if (wasEmpty) {
+      if (sendOrderSet_.insert(id).second) {
+        sendOrder_.push_back(id);
+      }
+    }
   }
   scheduleFlush();
 }
@@ -167,23 +175,36 @@ void MultiplexManager::flushPendingPackets() {
   }
 
   std::unique_lock<std::mutex> lock(queueMutex_);
-  for (auto it = pendingPackets_.begin(); it != pendingPackets_.end();) {
-    auto &queue = it->second;
-    while (!queue.empty()) {
-      const std::vector<char> &packet = queue.front();
-      lock.unlock();
-      const bool sent = trySendPacket(packet);
-      lock.lock();
-      if (!sent) {
-        sendBlocked_.store(true, std::memory_order_relaxed);
-        return;
-      }
-      queue.pop_front();
+  while (!sendOrder_.empty()) {
+    const std::string id = sendOrder_.front();
+    sendOrder_.pop_front();
+    auto it = pendingPackets_.find(id);
+    if (it == pendingPackets_.end()) {
+      sendOrderSet_.erase(id);
+      continue;
     }
+    auto &queue = it->second;
     if (queue.empty()) {
-      it = pendingPackets_.erase(it);
+      pendingPackets_.erase(it);
+      sendOrderSet_.erase(id);
+      continue;
+    }
+
+    const std::vector<char> &packet = queue.front();
+    lock.unlock();
+    const bool sent = trySendPacket(packet);
+    lock.lock();
+    if (!sent) {
+      sendBlocked_.store(true, std::memory_order_relaxed);
+      sendOrder_.push_front(id); // retry this id first when unblocked
+      return;
+    }
+    queue.pop_front();
+    if (!queue.empty()) {
+      sendOrder_.push_back(id);
     } else {
-      ++it;
+      pendingPackets_.erase(it);
+      sendOrderSet_.erase(id);
     }
   }
   sendBlocked_.store(false, std::memory_order_relaxed);
@@ -195,7 +216,7 @@ void MultiplexManager::scheduleFlush(std::chrono::milliseconds delay) {
   bool needSchedule = false;
   {
     std::lock_guard<std::mutex> lock(queueMutex_);
-    if (!flushScheduled_ && !pendingPackets_.empty()) {
+    if (!flushScheduled_ && !sendOrder_.empty()) {
       flushScheduled_ = true;
       needSchedule = true;
     }
@@ -220,7 +241,7 @@ void MultiplexManager::scheduleFlush(std::chrono::milliseconds delay) {
     {
       std::lock_guard<std::mutex> lock(queueMutex_);
       flushScheduled_ = false;
-      shouldReschedule = !pendingPackets_.empty();
+      shouldReschedule = !sendOrder_.empty();
       if (sendBlocked_.load(std::memory_order_relaxed)) {
         rescheduleDelay =
             std::chrono::milliseconds(backoffMs_.load(std::memory_order_relaxed));
@@ -407,4 +428,11 @@ bool MultiplexManager::isSendSaturated() {
   }
 
   return sendBlocked_.load(std::memory_order_relaxed);
+}
+
+void MultiplexManager::removeFromOrder(const std::string &id) {
+  sendOrderSet_.erase(id);
+  sendOrder_.erase(
+      std::remove(sendOrder_.begin(), sendOrder_.end(), id),
+      sendOrder_.end());
 }

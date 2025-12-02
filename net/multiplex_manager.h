@@ -54,10 +54,13 @@ private:
     void scheduleFlush(std::chrono::milliseconds delay = std::chrono::milliseconds(5));
     void resumePausedReads();
     bool isSendSaturated();
+    void removeFromOrder(const std::string &id);
 
     std::atomic<bool> sendBlocked_{false};
     std::atomic<int> backoffMs_{5};
     std::chrono::steady_clock::time_point lastBlocked_;
     std::unordered_set<std::string> pausedReads_;
     std::mutex pausedMutex_;
+    std::unordered_set<std::string> sendOrderSet_;
+    std::deque<std::string> sendOrder_;
 };
