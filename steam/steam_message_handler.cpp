@@ -57,9 +57,9 @@ void SteamMessageHandler::startAsyncPoll() {
     currentConnections = connections_;
   }
   for (auto conn : currentConnections) {
-    ISteamNetworkingMessage *pIncomingMsgs[10];
+    ISteamNetworkingMessage *pIncomingMsgs[64]; // larger batch for throughput
     int numMsgs =
-        m_pInterface_->ReceiveMessagesOnConnection(conn, pIncomingMsgs, 10);
+        m_pInterface_->ReceiveMessagesOnConnection(conn, pIncomingMsgs, 64);
     totalMessages += numMsgs;
     for (int i = 0; i < numMsgs; ++i) {
       ISteamNetworkingMessage *pIncomingMsg = pIncomingMsgs[i];

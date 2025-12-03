@@ -231,6 +231,22 @@ void Backend::joinHost() {
     return;
   }
 
+  CSteamID targetSteamID(hostID);
+  if (!targetSteamID.IsValid()) {
+    emit errorMessage(tr("无效的房间/Steam ID。"));
+    return;
+  }
+
+  // 如果输入的是房间 ID，先加入房间再由回调发起 P2P 连接
+  if (targetSteamID.IsLobby()) {
+    if (roomManager_ && roomManager_->joinLobby(targetSteamID)) {
+      updateStatus();
+    } else {
+      emit errorMessage(tr("无法加入房间。"));
+    }
+    return;
+  }
+
   if (steamManager_->joinHost(hostID)) {
     ensureServerRunning();
     updateStatus();

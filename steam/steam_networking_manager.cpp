@@ -54,6 +54,27 @@ bool SteamNetworkingManager::initialize() {
       k_ESteamNetworkingConfig_Global, 0, k_ESteamNetworkingConfig_Int32,
       &sendBufferSize);
 
+  // Increase allowed send rate to avoid artificial throttling
+  int32 sendRate = 50 * 1024 * 1024; // 50 MB/s
+  SteamNetworkingUtils()->SetConfigValue(
+      k_ESteamNetworkingConfig_SendRateMin,
+      k_ESteamNetworkingConfig_Global, 0, k_ESteamNetworkingConfig_Int32,
+      &sendRate);
+  SteamNetworkingUtils()->SetConfigValue(
+      k_ESteamNetworkingConfig_SendRateMax,
+      k_ESteamNetworkingConfig_Global, 0, k_ESteamNetworkingConfig_Int32,
+      &sendRate);
+
+  // Disable Nagle to reduce latency for tunneled traffic
+  int32 nagleTime = 0;
+  SteamNetworkingUtils()->SetConfigValue(
+      k_ESteamNetworkingConfig_NagleTime, k_ESteamNetworkingConfig_Global, 0,
+      k_ESteamNetworkingConfig_Int32, &nagleTime);
+
+  std::cout << "[SteamNet] SendBuffer=" << (sendBufferSize / 1024 / 1024)
+            << "MB, SendRate=" << (sendRate / 1024 / 1024)
+            << "MB/s, Nagle=" << nagleTime << std::endl;
+
   // 1. 允许 P2P (ICE) 直连
   // 默认情况下 Steam 可能会保守地只允许 LAN，这里设置为 "All" 允许公网 P2P
   int32 nIceEnable = k_nSteamNetworkingConfig_P2P_Transport_ICE_Enable_Public |
