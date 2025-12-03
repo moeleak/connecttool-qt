@@ -115,7 +115,7 @@ Backend::Backend(QObject *parent)
   callbackTimer_.start(16);
 
   connect(&slowTimer_, &QTimer::timeout, this, &Backend::refreshFriends);
-  slowTimer_.start(5000);
+  slowTimer_.start(15000);
 
   friendsRefreshResetTimer_.setSingleShot(true);
   connect(&friendsRefreshResetTimer_, &QTimer::timeout, this,

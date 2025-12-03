@@ -233,6 +233,8 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.fillHeight: true
             visible: win.currentPage === "room"
+            opacity: visible ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: 500; easing.type: Easing.InOutQuad } }
 
             ColumnLayout {
                 anchors.fill: parent
@@ -774,6 +776,8 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.fillHeight: true
             visible: win.currentPage === "lobby"
+            opacity: visible ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: 500; easing.type: Easing.InOutQuad } }
 
             onVisibleChanged: {
                 if (visible) {
@@ -1016,6 +1020,8 @@ ApplicationWindow {
             Layout.fillWidth: true
             Layout.fillHeight: true
             visible: win.currentPage === "about"
+            opacity: visible ? 1 : 0
+            Behavior on opacity { NumberAnimation { duration: 500; easing.type: Easing.InOutQuad } }
 
             Frame {
                 Layout.fillWidth: true
