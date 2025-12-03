@@ -783,14 +783,14 @@ ApplicationWindow {
                         color: "#e6efff"
                     }
                     Rectangle { Layout.fillWidth: true; color: "transparent" }
-                    Label {
-                        text: qsTr("房间数: %1").arg(backend.lobbiesModel ? backend.lobbiesModel.count : 0)
-                        color: "#7f8cab"
-                        Layout.alignment: Qt.AlignVCenter
-                    }
                     BusyIndicator {
                         running: backend.lobbyRefreshing
                         visible: running
+                        Layout.alignment: Qt.AlignVCenter
+                    }
+                    Label {
+                        text: qsTr("房间数: %1").arg(backend.lobbiesModel ? backend.lobbiesModel.count : 0)
+                        color: "#7f8cab"
                         Layout.alignment: Qt.AlignVCenter
                     }
                     Button {
