@@ -7,7 +7,7 @@ import Qt5Compat.GraphicalEffects
 ApplicationWindow {
     id: win
     width: 900
-    height: 640
+    height: 700
     minimumWidth: 900
     minimumHeight: 640
     visible: true
@@ -19,6 +19,16 @@ ApplicationWindow {
 
     property string friendFilter: ""
     property string lastError: ""
+    property string copyHint: ""
+
+    function copyBadge(label, value) {
+        if (!value || value.length === 0) {
+            return;
+        }
+        backend.copyToClipboard(value);
+        win.copyHint = qsTr("%1 已复制").arg(label);
+        copyTimer.restart();
+    }
 
     background: Rectangle {
         anchors.fill: parent
@@ -42,6 +52,13 @@ ApplicationWindow {
         interval: 4200
         repeat: false
         onTriggered: win.lastError = ""
+    }
+
+    Timer {
+        id: copyTimer
+        interval: 1600
+        repeat: false
+        onTriggered: win.copyHint = ""
     }
 
     ColumnLayout {
@@ -78,6 +95,13 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         color: "#dce7ff"
                         font.pixelSize: 16
+                    }
+                    Label {
+                        visible: win.copyHint.length > 0
+                        text: win.copyHint
+                        color: "#7fded1"
+                        font.pixelSize: 13
+                        Layout.alignment: Qt.AlignVCenter
                     }
                     Rectangle {
                         radius: 8
@@ -131,6 +155,64 @@ ApplicationWindow {
                                 backend.joinHost()
                             } else if (!checked && (backend.isConnected || backend.isHost)) {
                                 backend.disconnect()
+                            }
+                        }
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+
+                    Repeater {
+                        model: [
+                            { title: qsTr("房间 ID"), value: backend.lobbyId, accent: "#23c9a9" },
+                            { title: qsTr("房主 ID"), value: backend.hostSteamId, accent: "#2ad2ff" }
+                        ]
+                        delegate: Rectangle {
+                            required property string title
+                            required property string value
+                            required property string accent
+                            radius: 10
+                            color: "#151e2f"
+                            border.color: "#243149"
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 58
+                            opacity: value.length > 0 ? 1.0 : 0.4
+
+                            ColumnLayout {
+                                anchors.fill: parent
+                                anchors.margins: 10
+                                spacing: 4
+                                Label {
+                                    text: title
+                                    color: accent
+                                    font.pixelSize: 12
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 6
+                                    Label {
+                                        text: value.length > 0 ? value : qsTr("未加入")
+                                        color: "#dce7ff"
+                                        font.pixelSize: 15
+                                        elide: Text.ElideRight
+                                        Layout.fillWidth: true
+                                    }
+                                    Label {
+                                        text: qsTr("点击复制")
+                                        visible: value.length > 0
+                                        color: "#7f8cab"
+                                        font.pixelSize: 12
+                                    }
+                                }
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                enabled: value.length > 0
+                                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                                onClicked: win.copyBadge(title, value)
                             }
                         }
                     }
@@ -207,11 +289,6 @@ ApplicationWindow {
                             text: qsTr("房间成员")
                             font.pixelSize: 18
                             color: "#e6efff"
-                        }
-                        Label {
-                            text: backend.lobbyId.length > 0 ? qsTr("ID %1").arg(backend.lobbyId) : qsTr("未加入房间")
-                            color: "#7f8cab"
-                            font.pixelSize: 13
                         }
                         Rectangle { Layout.fillWidth: true; color: "transparent" }
                     }
@@ -508,8 +585,10 @@ ApplicationWindow {
                                     }
                                     Item { Layout.fillWidth: true }
                                     Button {
-                                        text: qsTr("邀请")
-                                        enabled: backend.isHost || backend.isConnected
+                                        text: backend.inviteCooldown === 0
+                                              ? qsTr("邀请")
+                                              : qsTr("等待 %1s").arg(backend.inviteCooldown)
+                                        enabled: (backend.isHost || backend.isConnected) && backend.inviteCooldown === 0
                                         Layout.alignment: Qt.AlignVCenter
                                         onClicked: backend.inviteFriend(steamId)
                                     }

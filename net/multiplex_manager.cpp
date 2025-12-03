@@ -7,7 +7,8 @@
 
 namespace {
 // Keep chunks close to path MTU to reduce Steam UDP fragmentation/lock pressure
-constexpr std::size_t kTunnelChunkBytes = 1200; // slightly larger chunks to reduce fragment count
+constexpr std::size_t kTunnelChunkBytes =
+    1100; // slightly larger chunks to reduce fragment count
 constexpr std::size_t kSendBufferBytes = 8 * 1024 * 1024;
 constexpr std::size_t kHighWaterBytes = 512 * 1024; // tighter throttling
 constexpr std::size_t kLowWaterBytes = 256 * 1024;
@@ -244,8 +245,8 @@ void MultiplexManager::scheduleFlush(std::chrono::milliseconds delay) {
 
   auto nextDelay = delay;
   if (sendBlocked_.load(std::memory_order_relaxed)) {
-    nextDelay = std::max(nextDelay,
-                         std::chrono::milliseconds(backoffMs_.load()));
+    nextDelay =
+        std::max(nextDelay, std::chrono::milliseconds(backoffMs_.load()));
   }
 
   sendTimer_->expires_after(nextDelay);
@@ -260,8 +261,8 @@ void MultiplexManager::scheduleFlush(std::chrono::milliseconds delay) {
       flushScheduled_ = false;
       shouldReschedule = !sendOrder_.empty();
       if (sendBlocked_.load(std::memory_order_relaxed)) {
-        rescheduleDelay =
-            std::chrono::milliseconds(backoffMs_.load(std::memory_order_relaxed));
+        rescheduleDelay = std::chrono::milliseconds(
+            backoffMs_.load(std::memory_order_relaxed));
       }
     }
     if (shouldReschedule) {
@@ -459,7 +460,6 @@ bool MultiplexManager::isSendSaturated() {
 
 void MultiplexManager::removeFromOrder(const std::string &id) {
   sendOrderSet_.erase(id);
-  sendOrder_.erase(
-      std::remove(sendOrder_.begin(), sendOrder_.end(), id),
-      sendOrder_.end());
+  sendOrder_.erase(std::remove(sendOrder_.begin(), sendOrder_.end(), id),
+                   sendOrder_.end());
 }

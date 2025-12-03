@@ -6,8 +6,10 @@
 #include "../steam/steam_utils.h"
 
 #include <QCoreApplication>
+#include <QGuiApplication>
 #include <QMetaObject>
 #include <QQmlEngine>
+#include <QClipboard>
 #include <QVariantMap>
 #include <QtDebug>
 #include <algorithm>
@@ -81,8 +83,17 @@ Backend::Backend(QObject *parent)
   connect(&slowTimer_, &QTimer::timeout, this, &Backend::refreshFriends);
   slowTimer_.start(5000);
 
+  connect(&cooldownTimer_, &QTimer::timeout, this, [this]() {
+    if (inviteCooldownSeconds_ > 0) {
+      inviteCooldownSeconds_ -= 1;
+      emit inviteCooldownChanged();
+    }
+  });
+  cooldownTimer_.start(1000);
+
   refreshFriends();
   updateMembersList();
+  refreshHostId();
   updateStatus();
 }
 
@@ -317,6 +328,10 @@ void Backend::setFriendFilter(const QString &text) {
 void Backend::refreshMembers() { updateMembersList(); }
 
 void Backend::inviteFriend(const QString &steamId) {
+  if (inviteCooldownSeconds_ > 0) {
+    emit errorMessage(tr("请 %1 秒后再发送邀请。").arg(inviteCooldownSeconds_));
+    return;
+  }
   if (!ensureSteamReady(tr("邀请好友"))) {
     return;
   }
@@ -329,8 +344,20 @@ void Backend::inviteFriend(const QString &steamId) {
   if (roomManager_ && roomManager_->getCurrentLobby().IsValid()) {
     SteamMatchmaking()->InviteUserToLobby(roomManager_->getCurrentLobby(),
                                           CSteamID(friendId));
+    inviteCooldownSeconds_ = 3;
+    emit inviteCooldownChanged();
   } else {
     emit errorMessage(tr("当前未在房间中，无法邀请。"));
+  }
+}
+
+void Backend::copyToClipboard(const QString &text) {
+  if (text.isEmpty()) {
+    return;
+  }
+  QClipboard *cb = QGuiApplication::clipboard();
+  if (cb) {
+    cb->setText(text);
   }
 }
 
@@ -342,6 +369,7 @@ void Backend::tick() {
   SteamAPI_RunCallbacks();
   steamManager_->update();
 
+  refreshHostId();
   updateMembersList();
   updateStatus();
 }
@@ -352,7 +380,7 @@ void Backend::updateStatus() {
     next = tr("Steam 未就绪。");
   } else if (isHost()) {
     const QString id = lobbyId();
-    next = id.isEmpty() ? tr("主持房间中…") : tr("主持房间 %1").arg(id);
+    next = id.isEmpty() ? tr("主持房间中…") : tr("作为房主正在主持房间");
   } else if (isConnected()) {
     const QString id = lobbyId();
     next = id.isEmpty() ? tr("已连接到房间") : tr("已连接到房主 %1").arg(id);
@@ -500,4 +528,18 @@ void Backend::updateMembersList() {
   }
 
   membersModel_.setMembers(std::move(entries));
+}
+
+void Backend::refreshHostId() {
+  QString next;
+  if (steamManager_) {
+    CSteamID host = steamManager_->getHostSteamID();
+    if (host.IsValid()) {
+      next = QString::number(host.ConvertToUint64());
+    }
+  }
+  if (next != hostSteamId_) {
+    hostSteamId_ = next;
+    emit hostSteamIdChanged();
+  }
 }

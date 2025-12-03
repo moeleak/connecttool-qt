@@ -50,16 +50,14 @@ bool SteamNetworkingManager::initialize() {
   // Increase default reliable send buffer to better handle large bursts
   int32 sendBufferSize = 2 * 1024 * 1024;
   SteamNetworkingUtils()->SetConfigValue(
-      k_ESteamNetworkingConfig_SendBufferSize,
-      k_ESteamNetworkingConfig_Global, 0, k_ESteamNetworkingConfig_Int32,
-      &sendBufferSize);
+      k_ESteamNetworkingConfig_SendBufferSize, k_ESteamNetworkingConfig_Global,
+      0, k_ESteamNetworkingConfig_Int32, &sendBufferSize);
 
   // Receive buffers tuned for moderate bandwidth to avoid runaway queues
   int32 recvBufferSize = 2 * 1024 * 1024; // 2 MB
   SteamNetworkingUtils()->SetConfigValue(
-      k_ESteamNetworkingConfig_RecvBufferSize,
-      k_ESteamNetworkingConfig_Global, 0, k_ESteamNetworkingConfig_Int32,
-      &recvBufferSize);
+      k_ESteamNetworkingConfig_RecvBufferSize, k_ESteamNetworkingConfig_Global,
+      0, k_ESteamNetworkingConfig_Int32, &recvBufferSize);
   int32 recvBufferMsgs = 2048;
   SteamNetworkingUtils()->SetConfigValue(
       k_ESteamNetworkingConfig_RecvBufferMessages,
@@ -67,15 +65,13 @@ bool SteamNetworkingManager::initialize() {
       &recvBufferMsgs);
 
   // Cap send rate to a conservative value to keep reliable window stable
-  int32 sendRate = 3 * 1024 * 1024; // 3 MB/s
+  int32 sendRate = 2 * 1024 * 1024; // 3 MB/s
   SteamNetworkingUtils()->SetConfigValue(
-      k_ESteamNetworkingConfig_SendRateMin,
-      k_ESteamNetworkingConfig_Global, 0, k_ESteamNetworkingConfig_Int32,
-      &sendRate);
+      k_ESteamNetworkingConfig_SendRateMin, k_ESteamNetworkingConfig_Global, 0,
+      k_ESteamNetworkingConfig_Int32, &sendRate);
   SteamNetworkingUtils()->SetConfigValue(
-      k_ESteamNetworkingConfig_SendRateMax,
-      k_ESteamNetworkingConfig_Global, 0, k_ESteamNetworkingConfig_Int32,
-      &sendRate);
+      k_ESteamNetworkingConfig_SendRateMax, k_ESteamNetworkingConfig_Global, 0,
+      k_ESteamNetworkingConfig_Int32, &sendRate);
 
   // Disable Nagle to reduce latency for tunneled traffic
   int32 nagleTime = 0;
@@ -86,8 +82,8 @@ bool SteamNetworkingManager::initialize() {
   std::cout << "[SteamNet] SendBuffer=" << (sendBufferSize / 1024 / 1024)
             << "MB, SendRate=" << (sendRate / 1024 / 1024)
             << "MB/s, RecvBuffer=" << (recvBufferSize / 1024 / 1024)
-            << "MB, RecvMsgs=" << recvBufferMsgs
-            << ", Nagle=" << nagleTime << std::endl;
+            << "MB, RecvMsgs=" << recvBufferMsgs << ", Nagle=" << nagleTime
+            << std::endl;
 
   // 1. 允许 P2P (ICE) 直连
   // 默认情况下 Steam 可能会保守地只允许 LAN，这里设置为 "All" 允许公网 P2P

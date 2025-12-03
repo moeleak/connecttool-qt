@@ -23,6 +23,7 @@ class Backend : public QObject {
   Q_PROPERTY(bool isConnected READ isConnected NOTIFY stateChanged)
   Q_PROPERTY(QString status READ status NOTIFY stateChanged)
   Q_PROPERTY(QString lobbyId READ lobbyId NOTIFY stateChanged)
+  Q_PROPERTY(QString hostSteamId READ hostSteamId NOTIFY hostSteamIdChanged)
   Q_PROPERTY(QString joinTarget READ joinTarget WRITE setJoinTarget NOTIFY
                  joinTargetChanged)
   Q_PROPERTY(int tcpClients READ tcpClients NOTIFY serverChanged)
@@ -35,6 +36,7 @@ class Backend : public QObject {
   Q_PROPERTY(QString friendFilter READ friendFilter WRITE setFriendFilter NOTIFY
                  friendFilterChanged)
   Q_PROPERTY(MembersModel *membersModel READ membersModel CONSTANT)
+  Q_PROPERTY(int inviteCooldown READ inviteCooldown NOTIFY inviteCooldownChanged)
 
 public:
   explicit Backend(QObject *parent = nullptr);
@@ -45,6 +47,7 @@ public:
   bool isConnected() const;
   QString status() const { return status_; }
   QString lobbyId() const;
+  QString hostSteamId() const { return hostSteamId_; }
   QString joinTarget() const { return joinTarget_; }
   int tcpClients() const;
   int localPort() const { return localPort_; }
@@ -53,6 +56,7 @@ public:
   FriendsModel *friendsModel() { return &friendsModel_; }
   MembersModel *membersModel() { return &membersModel_; }
   QString friendFilter() const { return friendFilter_; }
+  int inviteCooldown() const { return inviteCooldownSeconds_; }
 
   void setJoinTarget(const QString &id);
   void setLocalPort(int port);
@@ -65,6 +69,7 @@ public:
   Q_INVOKABLE void refreshFriends();
   Q_INVOKABLE void refreshMembers();
   Q_INVOKABLE void inviteFriend(const QString &steamId);
+  Q_INVOKABLE void copyToClipboard(const QString &text);
 
 signals:
   void stateChanged();
@@ -75,6 +80,8 @@ signals:
   void serverChanged();
   void errorMessage(const QString &message);
   void friendFilterChanged();
+  void inviteCooldownChanged();
+  void hostSteamIdChanged();
 
 private:
   void tick();
@@ -83,6 +90,7 @@ private:
   void updateFriendsList();
   void ensureServerRunning();
   bool ensureSteamReady(const QString &actionLabel);
+  void refreshHostId();
 
   std::unique_ptr<SteamNetworkingManager> steamManager_;
   std::unique_ptr<SteamRoomManager> roomManager_;
@@ -94,10 +102,12 @@ private:
   std::thread ioThread_;
   QTimer callbackTimer_;
   QTimer slowTimer_;
+  QTimer cooldownTimer_;
 
   bool steamReady_;
   QString status_;
   QString joinTarget_;
+  QString hostSteamId_;
   int localPort_;
   int localBindPort_;
   int lastTcpClients_;
@@ -107,4 +117,5 @@ private:
   MembersModel membersModel_;
   QString friendFilter_;
   std::unordered_map<uint64_t, QString> memberAvatars_;
+  int inviteCooldownSeconds_ = 0;
 };
