@@ -307,15 +307,19 @@ void SteamMatchmakingCallbacks::OnLobbyChatUpdate(
       (changeFlags & k_EChatMemberStateChangeDisconnected) ||
       (changeFlags & k_EChatMemberStateChangeKicked) ||
       (changeFlags & k_EChatMemberStateChangeBanned);
+  CSteamID changedUser = CSteamID(pCallback->m_ulSteamIDUserChanged);
 
   if (roomManager_->vpnMode_) {
-    CSteamID changedUser = CSteamID(pCallback->m_ulSteamIDUserChanged);
     const CSteamID mySteamId = SteamUser()->GetSteamID();
     if ((changeFlags & k_EChatMemberStateChangeEntered) &&
         roomManager_->vpnNetworkingManager_ && changedUser != mySteamId) {
       roomManager_->vpnNetworkingManager_->addPeer(changedUser);
     } else if (memberLeft && roomManager_->vpnNetworkingManager_) {
       roomManager_->vpnNetworkingManager_->removePeer(changedUser);
+    }
+    if (memberLeft && changedUser == manager_->getHostSteamID() &&
+        !manager_->isHost() && roomManager_->hostLeftCallback_) {
+      roomManager_->hostLeftCallback_();
     }
     return;
   }
@@ -324,7 +328,6 @@ void SteamMatchmakingCallbacks::OnLobbyChatUpdate(
     return;
   }
 
-  CSteamID changedUser = CSteamID(pCallback->m_ulSteamIDUserChanged);
   if (changedUser == manager_->getHostSteamID() && !manager_->isHost()) {
     std::cout << "Host left lobby, disconnecting client locally" << std::endl;
     manager_->disconnect();
@@ -493,6 +496,10 @@ std::string SteamRoomManager::getLobbyName() const {
 void SteamRoomManager::setLobbyListCallback(
     std::function<void(const std::vector<LobbyInfo> &)> callback) {
   lobbyListCallback_ = std::move(callback);
+}
+
+void SteamRoomManager::setHostLeftCallback(std::function<void()> callback) {
+  hostLeftCallback_ = std::move(callback);
 }
 
 void SteamRoomManager::refreshLobbyMetadata() {

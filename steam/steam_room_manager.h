@@ -76,6 +76,7 @@ public:
   std::string getLobbyName() const;
   void setLobbyListCallback(
       std::function<void(const std::vector<LobbyInfo> &)> callback);
+  void setHostLeftCallback(std::function<void()> callback);
   void broadcastPings(
       const std::vector<std::tuple<uint64_t, int, std::string>> &pings);
   bool getRemotePing(const CSteamID &id, int &ping, std::string &relay) const;
@@ -122,4 +123,5 @@ private:
   bool vpnMode_ = false;
   std::function<void(bool wantsTun, const CSteamID &lobby)>
       lobbyModeChangedCallback_;
+  std::function<void()> hostLeftCallback_;
 };

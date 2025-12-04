@@ -186,6 +186,10 @@ Backend::Backend(QObject *parent)
             },
             Qt::QueuedConnection);
       });
+  roomManager_->setHostLeftCallback([this]() {
+    QMetaObject::invokeMethod(
+        this, [this]() { disconnect(); }, Qt::QueuedConnection);
+  });
   roomManager_->setLobbyListCallback(
       [this](const std::vector<SteamRoomManager::LobbyInfo> &lobbies) {
         QMetaObject::invokeMethod(
