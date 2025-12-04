@@ -18,7 +18,6 @@ ApplicationWindow {
     Material.accent: "#2ad2ff"
 
     property string friendFilter: ""
-    property string lastError: ""
     property string copyHint: ""
     property string currentPage: "room"
     property var navItems: [
@@ -47,17 +46,6 @@ ApplicationWindow {
 
     Connections {
         target: backend
-        function onErrorMessage(msg) {
-            win.lastError = msg
-            errorTimer.restart()
-        }
-    }
-
-    Timer {
-        id: errorTimer
-        interval: 4200
-        repeat: false
-        onTriggered: win.lastError = ""
     }
 
     Timer {
@@ -467,6 +455,7 @@ ApplicationWindow {
                                                 required property string avatar
                                                 required property var ping
                                                 required property string relay
+                                                required property bool isFriend
                                                 radius: 10
                                                 color: "#162033"
                                                 border.color: "#1f2f45"
@@ -521,14 +510,34 @@ ApplicationWindow {
                                                     }
 
                                                     ColumnLayout {
-                                                        spacing: 2
+                                                        spacing: 4
                                                         Layout.fillWidth: true
-                                                        Label {
-                                                            text: displayName
-                                                            font.pixelSize: 16
-                                                            color: "#e1edff"
-                                                            elide: Text.ElideRight
-                                                            horizontalAlignment: Text.AlignLeft
+                                                        RowLayout {
+                                                            Layout.fillWidth: true
+                                                            spacing: 8
+                                                            Label {
+                                                                text: displayName
+                                                                font.pixelSize: 16
+                                                                color: "#e1edff"
+                                                                elide: Text.ElideRight
+                                                                horizontalAlignment: Text.AlignLeft
+                                                                Layout.fillWidth: true
+                                                            }
+                                                            Rectangle {
+                                                                radius: 8
+                                                                color: "#142033"
+                                                                border.color: isFriend ? "#23c9a9" : "#ef476f"
+                                                                implicitHeight: 22
+                                                                implicitWidth: relationLabel.implicitWidth + 14
+                                                                Layout.alignment: Qt.AlignVCenter
+                                                                Label {
+                                                                    id: relationLabel
+                                                                    anchors.centerIn: parent
+                                                                    text: isFriend ? qsTr("好友") : qsTr("陌生人")
+                                                                    color: isFriend ? "#23c9a9" : "#ef476f"
+                                                                    font.pixelSize: 11
+                                                                }
+                                                            }
                                                         }
                                                         Label {
                                                             text: qsTr("SteamID: %1").arg(steamId)
@@ -558,6 +567,15 @@ ApplicationWindow {
                                                             elide: Text.ElideRight
                                                             horizontalAlignment: Text.AlignRight
                                                             Layout.alignment: Qt.AlignRight
+                                                        }
+                                                    }
+                                                    Button {
+                                                        visible: !isFriend
+                                                        text: qsTr("添加好友")
+                                                        Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
+                                                        onClicked: {
+                                                            console.log("[QML] addFriend click", steamId)
+                                                            backend.addFriend(steamId)
                                                         }
                                                     }
                                                 }
@@ -1211,33 +1229,4 @@ ApplicationWindow {
         }
     }
 
-    Rectangle {
-        visible: win.lastError.length > 0
-        opacity: visible ? 1 : 0
-        Behavior on opacity { NumberAnimation { duration: 150 } }
-        radius: 10
-        color: "#ef476f"
-        anchors.horizontalCenter: parent.horizontalCenter
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: 18
-        width: Math.min(parent.width - 80, 480)
-        height: implicitHeight
-
-        Column {
-            anchors.fill: parent
-            anchors.margins: 12
-            spacing: 4
-            Label {
-                text: qsTr("提示")
-                font.pixelSize: 14
-                color: "#ffe3ed"
-            }
-            Label {
-                text: win.lastError
-                font.pixelSize: 13
-                wrapMode: Text.Wrap
-                color: "#fff9fb"
-            }
-        }
-    }
 }

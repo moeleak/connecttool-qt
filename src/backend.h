@@ -100,6 +100,7 @@ public:
   Q_INVOKABLE void refreshLobbies();
   Q_INVOKABLE void refreshMembers();
   Q_INVOKABLE void inviteFriend(const QString &steamId);
+  Q_INVOKABLE void addFriend(const QString &steamId);
   Q_INVOKABLE void copyToClipboard(const QString &text);
 
 signals:
@@ -109,7 +110,6 @@ signals:
   void localBindPortChanged();
   void friendsChanged();
   void serverChanged();
-  void errorMessage(const QString &message);
   void friendFilterChanged();
   void inviteCooldownChanged();
   void hostSteamIdChanged();

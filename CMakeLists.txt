@@ -1,10 +1,13 @@
 cmake_minimum_required(VERSION 3.20)
+if(POLICY CMP0167)
+    cmake_policy(SET CMP0167 NEW)
+endif()
 project(ConnectToolQt LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2)
-find_package(Boost REQUIRED)
+find_package(Boost 1.70 CONFIG REQUIRED COMPONENTS headers)
 find_package(Threads REQUIRED)
 
 qt_standard_project_setup()

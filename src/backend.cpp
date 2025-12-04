@@ -6,11 +6,13 @@
 #include "../steam/steam_utils.h"
 
 #include <QClipboard>
+#include <QDesktopServices>
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QMetaObject>
 #include <QQmlEngine>
 #include <QVariantMap>
+#include <QUrl>
 #include <QtDebug>
 #include <algorithm>
 #include <chrono>
@@ -304,7 +306,7 @@ bool Backend::ensureSteamReady(const QString &actionLabel) {
   if (steamReady_) {
     return true;
   }
-  emit errorMessage(tr("无法%1：Steam 未初始化。").arg(actionLabel));
+  qWarning() << tr("无法%1：Steam 未初始化。").arg(actionLabel);
   return false;
 }
 
@@ -313,11 +315,11 @@ void Backend::startHosting() {
     return;
   }
   if (isHost()) {
-    emit errorMessage(tr("已经在主持房间中。"));
+    qWarning() << tr("已经在主持房间中。");
     return;
   }
   if (isConnected()) {
-    emit errorMessage(tr("当前已连接到房间，请先断开。"));
+    qWarning() << tr("当前已连接到房间，请先断开。");
     return;
   }
 
@@ -325,7 +327,7 @@ void Backend::startHosting() {
     steamManager_->setHostSteamID(SteamUser()->GetSteamID());
     updateStatus();
   } else {
-    emit errorMessage(tr("创建房间失败，请检查 Steam 状态。"));
+    qWarning() << tr("创建房间失败，请检查 Steam 状态。");
   }
 }
 
@@ -345,7 +347,7 @@ void Backend::ensureServerRunning() {
         Qt::QueuedConnection);
   });
   if (!server_->start()) {
-    emit errorMessage(tr("启动本地 TCP 服务器失败。"));
+    qWarning() << tr("启动本地 TCP 服务器失败。");
     server_.reset();
     lastTcpClients_ = 0;
   }
@@ -357,7 +359,7 @@ void Backend::joinHost() {
     return;
   }
   if (isConnected()) {
-    emit errorMessage(tr("已经连接到房间，请先断开。"));
+    qWarning() << tr("已经连接到房间，请先断开。");
     return;
   }
   clearStatusOverride();
@@ -371,20 +373,20 @@ void Backend::joinHost() {
   uint64 hostID = trimmedTarget.toULongLong(&ok);
   if (!ok) {
     markNotFound();
-    emit errorMessage(tr("房间不存在。"));
+    qWarning() << tr("房间不存在。");
     return;
   }
 
   CSteamID targetSteamID(hostID);
   if (!targetSteamID.IsValid()) {
     markNotFound();
-    emit errorMessage(tr("房间不存在。"));
+    qWarning() << tr("房间不存在。");
     return;
   }
 
   if (!targetSteamID.IsLobby() && !targetSteamID.BIndividualAccount()) {
     markNotFound();
-    emit errorMessage(tr("房间不存在。"));
+    qWarning() << tr("房间不存在。");
     return;
   }
 
@@ -393,7 +395,7 @@ void Backend::joinHost() {
     if (roomManager_ && roomManager_->joinLobby(targetSteamID)) {
       updateStatus();
     } else {
-      emit errorMessage(tr("无法加入房间。"));
+      qWarning() << tr("无法加入房间。");
     }
     return;
   }
@@ -402,7 +404,7 @@ void Backend::joinHost() {
     ensureServerRunning();
     updateStatus();
   } else {
-    emit errorMessage(tr("无法连接到房主。"));
+    qWarning() << tr("无法连接到房主。");
   }
 }
 
@@ -415,13 +417,13 @@ void Backend::joinLobby(const QString &lobbyId) {
   bool ok = false;
   const uint64 idValue = trimmedId.toULongLong(&ok);
   if (!ok) {
-    emit errorMessage(tr("无效的房间 ID。"));
+    qWarning() << tr("无效的房间 ID。");
     return;
   }
 
   CSteamID lobby(idValue);
   if (!lobby.IsValid() || !lobby.IsLobby()) {
-    emit errorMessage(tr("请输入有效的房间 ID。"));
+    qWarning() << tr("请输入有效的房间 ID。");
     return;
   }
 
@@ -433,7 +435,7 @@ void Backend::joinLobby(const QString &lobbyId) {
   if (roomManager_ && roomManager_->joinLobby(lobby)) {
     updateStatus();
   } else {
-    emit errorMessage(tr("无法加入房间。"));
+    qWarning() << tr("无法加入房间。");
   }
 }
 
@@ -523,7 +525,7 @@ void Backend::refreshLobbies() {
   if (roomManager_ && roomManager_->searchLobbies()) {
     setLobbyRefreshing(true);
   } else {
-    emit errorMessage(tr("无法请求大厅列表。"));
+    qWarning() << tr("无法请求大厅列表。");
     setLobbyRefreshing(false);
   }
 }
@@ -579,12 +581,12 @@ void Backend::inviteFriend(const QString &steamId) {
   bool ok = false;
   uint64 friendId = steamId.toULongLong(&ok);
   if (!ok) {
-    emit errorMessage(tr("无效的好友 ID。"));
+    qWarning() << tr("无效的好友 ID。");
     return;
   }
   auto it = inviteCooldowns_.find(friendId);
   if (it != inviteCooldowns_.end() && it->second > 0) {
-    emit errorMessage(tr("请 %1 秒后再发送邀请。").arg(it->second));
+    qWarning() << tr("请 %1 秒后再发送邀请。").arg(it->second);
     return;
   }
   if (roomManager_ && roomManager_->getCurrentLobby().IsValid()) {
@@ -596,8 +598,71 @@ void Backend::inviteFriend(const QString &steamId) {
     emit inviteCooldownChanged();
     updateFriendCooldown(steamId, inviteCooldowns_[friendId]);
   } else {
-    emit errorMessage(tr("当前未在房间中，无法邀请。"));
+    qWarning() << tr("当前未在房间中，无法邀请。");
   }
+}
+
+void Backend::addFriend(const QString &steamId) {
+  if (!ensureSteamReady(tr("添加好友"))) {
+    return;
+  }
+  qDebug() << "[Friends] addFriend request" << steamId;
+
+  bool ok = false;
+  const uint64 targetId = steamId.toULongLong(&ok);
+  if (!ok) {
+    qDebug() << "[Friends] addFriend invalid id";
+    qWarning() << tr("无效的好友 ID。");
+    return;
+  }
+
+  CSteamID target(targetId);
+  if (!target.IsValid() || !target.BIndividualAccount()) {
+    qDebug() << "[Friends] addFriend invalid account";
+    qWarning() << tr("无效的好友 ID。");
+    return;
+  }
+
+  if (SteamUser() && target == SteamUser()->GetSteamID()) {
+    qDebug() << "[Friends] addFriend self";
+    qWarning() << tr("无法添加自己为好友。");
+    return;
+  }
+
+  if (SteamFriends() &&
+      SteamFriends()->HasFriend(target, k_EFriendFlagImmediate)) {
+    qDebug() << "[Friends] addFriend already friend";
+    qWarning() << tr("已经是好友了。");
+    return;
+  }
+
+  if (!SteamFriends()) {
+    qDebug() << "[Friends] addFriend missing SteamFriends";
+    qWarning() << tr("无法发送好友请求，请检查 Steam 状态。");
+    return;
+  }
+
+  const bool overlayEnabled =
+      SteamUtils() && SteamUtils()->IsOverlayEnabled();
+  if (overlayEnabled) {
+    qDebug() << "[Friends] opening overlay friendadd"
+             << target.ConvertToUint64();
+    SteamFriends()->ActivateGameOverlayToUser("friendadd", target);
+  } else {
+    qDebug() << "[Friends] overlay disabled or unavailable";
+  }
+
+  const QUrl profileUrl(
+      QStringLiteral("https://steamcommunity.com/profiles/%1/").arg(steamId));
+  const bool opened = QDesktopServices::openUrl(profileUrl);
+  qDebug() << "[Friends] fallback openUrl (profile)" << profileUrl
+           << "opened:" << opened;
+
+  qWarning()
+      << (overlayEnabled
+              ? tr("已尝试打开 Steam 添加好友窗口；同时在浏览器中打开了对方个人主页。")
+              : tr("已在浏览器中打开对方 Steam 个人主页，请在网页中添加好友。"));
+  setStatusOverride(tr("正在打开 Steam 个人主页…"), 2000);
 }
 
 void Backend::updateFriendCooldown(const QString &steamId, int seconds) {
@@ -814,6 +879,9 @@ void Backend::updateMembersList() {
     seen.insert(memberValue);
 
     MembersModel::Entry entry;
+    entry.isFriend = (SteamFriends() &&
+                      SteamFriends()->HasFriend(memberId, k_EFriendFlagImmediate)) ||
+                     (SteamUser() && memberId == myId);
     entry.steamId = QString::number(memberValue);
     entry.displayName =
         QString::fromUtf8(SteamFriends()->GetFriendPersonaName(memberId));
@@ -876,6 +944,10 @@ void Backend::updateMembersList() {
       }
 
       MembersModel::Entry entry;
+      entry.isFriend =
+          (SteamFriends() &&
+           SteamFriends()->HasFriend(remoteId, k_EFriendFlagImmediate)) ||
+          (SteamUser() && remoteId == myId);
       entry.steamId = QString::number(remoteValue);
       entry.displayName =
           QString::fromUtf8(SteamFriends()->GetFriendPersonaName(remoteId));

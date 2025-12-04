@@ -28,6 +28,8 @@ QVariant MembersModel::data(const QModelIndex &index, int role) const {
     return entry.ping >= 0 ? QVariant(entry.ping) : QVariant();
   case RelayRole:
     return entry.relay;
+  case IsFriendRole:
+    return entry.isFriend;
   default:
     return {};
   }
@@ -40,6 +42,7 @@ QHash<int, QByteArray> MembersModel::roleNames() const {
   roles[AvatarRole] = "avatar";
   roles[PingRole] = "ping";
   roles[RelayRole] = "relay";
+  roles[IsFriendRole] = "isFriend";
   return roles;
 }
 
@@ -58,7 +61,8 @@ void MembersModel::setMembers(std::vector<Entry> entries) {
         entries[i].displayName != entries_[i].displayName ||
         entries[i].avatar != entries_[i].avatar ||
         entries[i].ping != entries_[i].ping ||
-        entries[i].relay != entries_[i].relay) {
+        entries[i].relay != entries_[i].relay ||
+        entries[i].isFriend != entries_[i].isFriend) {
       changed = true;
       break;
     }
