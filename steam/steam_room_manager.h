@@ -9,7 +9,10 @@
 #include <chrono>
 #include <tuple>
 
+inline constexpr const char kLobbyKeyMode[] = "ct_mode";
+
 class SteamNetworkingManager; // Forward declaration
+class SteamVpnNetworkingManager;
 class SteamRoomManager;       // Forward declaration for callbacks
 
 class SteamFriendsCallbacks {
@@ -73,6 +76,7 @@ public:
   std::string getLobbyName() const;
   void setLobbyListCallback(
       std::function<void(const std::vector<LobbyInfo> &)> callback);
+  void setHostLeftCallback(std::function<void()> callback);
   void broadcastPings(
       const std::vector<std::tuple<uint64_t, int, std::string>> &pings);
   bool getRemotePing(const CSteamID &id, int &ping, std::string &relay) const;
@@ -85,6 +89,10 @@ public:
   void setCurrentLobby(CSteamID lobby) { currentLobby = lobby; }
   void addLobby(CSteamID lobby) { lobbies.push_back(lobby); }
   void clearLobbies() { lobbies.clear(); }
+  void setVpnMode(bool enabled, SteamVpnNetworkingManager *vpnManager);
+  bool vpnMode() const { return vpnMode_; }
+  void setLobbyModeChangedCallback(
+      std::function<void(bool wantsTun, const CSteamID &lobby)> callback);
 
 private:
   friend class SteamMatchmakingCallbacks;
@@ -94,8 +102,10 @@ private:
   void decideTransportForCurrentLobby();
   void notifyLobbyListUpdated();
   void handlePingMessage(const std::string &payload);
+  bool lobbyWantsTun(CSteamID lobby) const;
 
   SteamNetworkingManager *networkingManager_;
+  SteamVpnNetworkingManager *vpnNetworkingManager_ = nullptr;
   CSteamID currentLobby;
   std::vector<CSteamID> lobbies;
   std::vector<LobbyInfo> lobbyInfos;
@@ -110,4 +120,8 @@ private:
     std::chrono::steady_clock::time_point updatedAt;
   };
   std::unordered_map<uint64_t, PingInfo> remotePings_;
+  bool vpnMode_ = false;
+  std::function<void(bool wantsTun, const CSteamID &lobby)>
+      lobbyModeChangedCallback_;
+  std::function<void()> hostLeftCallback_;
 };

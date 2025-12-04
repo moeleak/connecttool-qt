@@ -5,15 +5,14 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2)
 set(BOOST_MIN_VERSION 1.70)
-set(_boost_components headers)
 if(POLICY CMP0167)
     # Prefer FindBoost when config packages are unavailable (older toolchains)
     cmake_policy(SET CMP0167 OLD)
 endif()
-find_package(Boost ${BOOST_MIN_VERSION} CONFIG QUIET COMPONENTS ${_boost_components})
+find_package(Boost ${BOOST_MIN_VERSION} CONFIG QUIET)
 if(NOT Boost_FOUND)
     message(STATUS "Boost config package not found, falling back to CMake FindBoost.")
-    find_package(Boost ${BOOST_MIN_VERSION} REQUIRED COMPONENTS ${_boost_components})
+    find_package(Boost ${BOOST_MIN_VERSION} REQUIRED)
 endif()
 find_package(Threads REQUIRED)
 
@@ -96,21 +95,48 @@ add_executable(connecttool-qt
     src/members_model.cpp
     net/multiplex_manager.cpp
     net/tcp_server.cpp
+    net/ip_negotiator.cpp
+    net/heartbeat_manager.cpp
+    net/node_identity.cpp
     steam/steam_message_handler.cpp
     steam/steam_networking_manager.cpp
     steam/steam_room_manager.cpp
-    steam/steam_utils.cpp)
+    steam/steam_utils.cpp
+    steam/vpn_message_handler.cpp
+    steam/steam_vpn_networking_manager.cpp
+    steam/steam_vpn_bridge.cpp)
+
+if(WIN32)
+    target_sources(connecttool-qt PRIVATE tun/tun_windows.cpp)
+elseif(APPLE)
+    target_sources(connecttool-qt PRIVATE tun/tun_macos.cpp)
+else()
+    target_sources(connecttool-qt PRIVATE tun/tun_linux.cpp)
+endif()
 
 target_include_directories(connecttool-qt PRIVATE
     src
     net
     steam
+    tun
     ${STEAMWORKS_INCLUDE_DIR})
 
-# Older FindBoost versions may not provide Boost::headers; alias Boost::boost for safety.
-if(NOT TARGET Boost::headers AND TARGET Boost::boost)
-    add_library(Boost::headers INTERFACE IMPORTED)
-    target_link_libraries(Boost::headers INTERFACE Boost::boost)
+# Ensure we always get a headers-only target, regardless of which Boost package layout is found.
+if(NOT TARGET Boost::headers)
+    if(TARGET Boost::boost)
+        add_library(Boost::headers INTERFACE IMPORTED)
+        target_link_libraries(Boost::headers INTERFACE Boost::boost)
+    elseif(Boost_INCLUDE_DIRS OR Boost_INCLUDE_DIR)
+        set(_boost_includes ${Boost_INCLUDE_DIRS})
+        if(NOT _boost_includes)
+            set(_boost_includes ${Boost_INCLUDE_DIR})
+        endif()
+        add_library(Boost_headers INTERFACE)
+        target_include_directories(Boost_headers INTERFACE ${_boost_includes})
+        add_library(Boost::headers ALIAS Boost_headers)
+    else()
+        message(FATAL_ERROR "Boost headers not found. Set Boost_ROOT or Boost_INCLUDE_DIR to a valid installation.")
+    endif()
 endif()
 
 target_link_libraries(connecttool-qt PRIVATE
@@ -122,6 +148,10 @@ target_link_libraries(connecttool-qt PRIVATE
     Boost::headers
     Threads::Threads
     ${STEAMWORKS_LIBRARY})
+
+if(WIN32)
+    target_link_libraries(connecttool-qt PRIVATE iphlpapi ws2_32)
+endif()
 
 # Ensure the Steam redistributable is next to the executable at build and
 # install time, and make sure the loader can find it on macOS.

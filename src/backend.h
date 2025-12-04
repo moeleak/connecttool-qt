@@ -17,6 +17,8 @@
 
 class SteamNetworkingManager;
 class TCPServer;
+class SteamVpnNetworkingManager;
+class SteamVpnBridge;
 
 class Backend : public QObject {
   Q_OBJECT
@@ -24,6 +26,8 @@ class Backend : public QObject {
   Q_PROPERTY(bool isHost READ isHost NOTIFY stateChanged)
   Q_PROPERTY(bool isConnected READ isConnected NOTIFY stateChanged)
   Q_PROPERTY(QString status READ status NOTIFY stateChanged)
+  Q_PROPERTY(int connectionMode READ connectionMode WRITE setConnectionMode
+                 NOTIFY stateChanged)
   Q_PROPERTY(QString lobbyId READ lobbyId NOTIFY stateChanged)
   Q_PROPERTY(QString lobbyName READ lobbyName NOTIFY stateChanged)
   Q_PROPERTY(bool publishLobby READ publishLobby WRITE setPublishLobby NOTIFY
@@ -52,10 +56,14 @@ class Backend : public QObject {
                  lobbyFilterChanged)
   Q_PROPERTY(int lobbySortMode READ lobbySortMode WRITE setLobbySortMode NOTIFY
                  lobbySortModeChanged)
+  Q_PROPERTY(QString tunLocalIp READ tunLocalIp NOTIFY stateChanged)
+  Q_PROPERTY(QString tunDeviceName READ tunDeviceName NOTIFY stateChanged)
   Q_PROPERTY(
       int inviteCooldown READ inviteCooldown NOTIFY inviteCooldownChanged)
 
 public:
+  enum class ConnectionMode { Tcp = 0, Tun = 1 };
+
   explicit Backend(QObject *parent = nullptr);
   ~Backend();
 
@@ -63,6 +71,9 @@ public:
   bool isHost() const;
   bool isConnected() const;
   QString status() const { return status_; }
+  int connectionMode() const {
+    return static_cast<int>(connectionMode_);
+  }
   QString lobbyId() const;
   QString lobbyName() const;
   QString hostSteamId() const { return hostSteamId_; }
@@ -82,6 +93,8 @@ public:
   bool lobbyRefreshing() const { return lobbyRefreshing_; }
   QString lobbyFilter() const { return lobbyFilter_; }
   int lobbySortMode() const { return lobbySortMode_; }
+  QString tunLocalIp() const { return tunLocalIp_; }
+  QString tunDeviceName() const { return tunDeviceName_; }
 
   void setJoinTarget(const QString &id);
   void setPublishLobby(bool publish);
@@ -91,6 +104,8 @@ public:
   void setRoomName(const QString &name);
   void setLobbyFilter(const QString &text);
   void setLobbySortMode(int mode);
+  void setConnectionMode(int mode);
+  void handleLobbyModeChanged(bool wantsTun, const CSteamID &lobby);
 
   Q_INVOKABLE void startHosting();
   Q_INVOKABLE void joinHost();
@@ -137,8 +152,17 @@ private:
   void setStatusOverride(const QString &text, int durationMs = 3000);
   void clearStatusOverride();
   void setJoinTargetFromLobby(const QString &id);
+  void ensureVpnSetup();
+  void stopVpn();
+  void syncVpnPeers();
+  void updateVpnInfo();
+  bool inTunMode() const { return connectionMode_ == ConnectionMode::Tun; }
+  bool inTcpMode() const { return connectionMode_ == ConnectionMode::Tcp; }
+  void ensureVpnRunning();
 
   std::unique_ptr<SteamNetworkingManager> steamManager_;
+  std::unique_ptr<SteamVpnNetworkingManager> vpnManager_;
+  std::unique_ptr<SteamVpnBridge> vpnBridge_;
   std::unique_ptr<SteamRoomManager> roomManager_;
   std::unique_ptr<TCPServer> server_;
   boost::asio::io_context ioContext_;
@@ -179,4 +203,11 @@ private:
   bool friendsRefreshing_ = false;
   bool lobbyRefreshing_ = false;
   std::chrono::steady_clock::time_point lastPingBroadcast_;
+  ConnectionMode connectionMode_ = ConnectionMode::Tcp;
+  bool vpnHosting_ = false;
+  bool vpnConnected_ = false;
+  bool vpnWanted_ = false;
+  bool vpnStartAttempted_ = false;
+  QString tunLocalIp_;
+  QString tunDeviceName_;
 };

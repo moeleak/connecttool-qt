@@ -1,5 +1,7 @@
 #include "steam_networking_manager.h"
+#include "steam_room_manager.h"
 #include <algorithm>
+#include <cstring>
 #include <iostream>
 #include <limits>
 
@@ -16,9 +18,12 @@ void SteamNetworkingManager::OnSteamNetConnectionStatusChanged(
 SteamNetworkingManager::SteamNetworkingManager()
     : m_pInterface(nullptr), hListenSock(k_HSteamListenSocket_Invalid),
       g_isHost(false), g_isClient(false), g_isConnected(false),
-      g_hConnection(k_HSteamNetConnection_Invalid), io_context_(nullptr),
-      server_(nullptr), localPort_(nullptr), localBindPort_(nullptr),
-      messageHandler_(nullptr), hostPing_(0) {}
+      g_hConnection(k_HSteamNetConnection_Invalid), g_hostSteamID(),
+      hostPing_(0), g_retryCount(0), g_currentVirtualPort(0),
+      io_context_(nullptr), server_(nullptr), localPort_(nullptr),
+      localBindPort_(nullptr), messageHandler_(nullptr),
+      roomManager_(nullptr), relayFallbackPending_(false),
+      relayFallbackTried_(false) {}
 
 SteamNetworkingManager::~SteamNetworkingManager() {
   stopMessageHandler();
@@ -135,24 +140,55 @@ void SteamNetworkingManager::shutdown() {
   SteamAPI_Shutdown();
 }
 
+bool SteamNetworkingManager::connectToHostInternal(
+    const CSteamID &hostSteamID, bool relayOnly) {
+  SteamNetworkingIdentity identity;
+  identity.SetSteamID(hostSteamID);
+
+  SteamNetworkingConfigValue_t options[2];
+  int optionCount = 0;
+
+  if (relayOnly) {
+    int32 disableIce = 0;
+    options[optionCount].SetInt32(
+        k_ESteamNetworkingConfig_P2P_Transport_ICE_Enable, disableIce);
+    ++optionCount;
+
+    int32 sdrPenalty = 0;
+    options[optionCount].SetInt32(
+        k_ESteamNetworkingConfig_P2P_Transport_SDR_Penalty, sdrPenalty);
+    ++optionCount;
+  }
+
+  g_hConnection = m_pInterface->ConnectP2P(
+      identity, 0, optionCount, optionCount > 0 ? options : nullptr);
+
+  if (g_hConnection != k_HSteamNetConnection_Invalid) {
+    std::cout << "Attempting to connect to host "
+              << hostSteamID.ConvertToUint64() << " with virtual port " << 0;
+    if (relayOnly) {
+      std::cout << " (relay only)";
+    }
+    std::cout << std::endl;
+    return true;
+  }
+
+  std::cerr << "Failed to initiate connection";
+  if (relayOnly) {
+    std::cerr << " via relay";
+  }
+  std::cerr << std::endl;
+  return false;
+}
+
 bool SteamNetworkingManager::joinHost(uint64 hostID) {
   CSteamID hostSteamID(hostID);
   g_isClient = true;
   g_hostSteamID = hostSteamID;
-  SteamNetworkingIdentity identity;
-  identity.SetSteamID(hostSteamID);
+  relayFallbackPending_ = false;
+  relayFallbackTried_ = false;
 
-  g_hConnection = m_pInterface->ConnectP2P(identity, 0, 0, nullptr);
-
-  if (g_hConnection != k_HSteamNetConnection_Invalid) {
-    std::cout << "Attempting to connect to host "
-              << hostSteamID.ConvertToUint64() << " with virtual port " << 0
-              << std::endl;
-    return true;
-  } else {
-    std::cerr << "Failed to initiate connection" << std::endl;
-    return false;
-  }
+  return connectToHostInternal(hostSteamID, false);
 }
 
 void SteamNetworkingManager::disconnect() {
@@ -181,6 +217,8 @@ void SteamNetworkingManager::disconnect() {
   g_isClient = false;
   g_isConnected = false;
   hostPing_ = 0;
+  relayFallbackPending_ = false;
+  relayFallbackTried_ = false;
 
   std::cout << "Disconnected from network" << std::endl;
 }
@@ -210,14 +248,34 @@ void SteamNetworkingManager::stopMessageHandler() {
 }
 
 void SteamNetworkingManager::update() {
-  std::lock_guard<std::mutex> lock(connectionsMutex);
-  // Update ping to host/client connection
-  if (g_hConnection != k_HSteamNetConnection_Invalid) {
-    SteamNetConnectionRealTimeStatus_t status;
-    if (m_pInterface->GetConnectionRealTimeStatus(g_hConnection, &status, 0,
-                                                  nullptr)) {
-      hostPing_ = status.m_nPing;
+  bool shouldRetryRelay = false;
+  CSteamID retryTarget;
+
+  {
+    std::lock_guard<std::mutex> lock(connectionsMutex);
+    // Update ping to host/client connection
+    if (g_hConnection != k_HSteamNetConnection_Invalid) {
+      SteamNetConnectionRealTimeStatus_t status;
+      if (m_pInterface->GetConnectionRealTimeStatus(g_hConnection, &status,
+                                                    0, nullptr)) {
+        hostPing_ = status.m_nPing;
+      }
     }
+
+    if (relayFallbackPending_ && !relayFallbackTried_ && g_isClient &&
+        g_hConnection == k_HSteamNetConnection_Invalid &&
+        g_hostSteamID.IsValid()) {
+      shouldRetryRelay = true;
+      retryTarget = g_hostSteamID;
+      relayFallbackPending_ = false;
+      relayFallbackTried_ = true;
+    }
+  }
+
+  if (shouldRetryRelay) {
+    std::cout << "[SteamNet] ICE failed, retrying via relay only"
+              << std::endl;
+    connectToHostInternal(retryTarget, true);
   }
 }
 
@@ -302,62 +360,90 @@ void SteamNetworkingManager::applyTransportPreference(int directPingMs,
 
 void SteamNetworkingManager::handleConnectionStatusChanged(
     SteamNetConnectionStatusChangedCallback_t *pInfo) {
-  std::lock_guard<std::mutex> lock(connectionsMutex);
-  std::cout << "Connection status changed: " << pInfo->m_info.m_eState
-            << " for connection " << pInfo->m_hConn << std::endl;
-  if (pInfo->m_info.m_eState ==
-      k_ESteamNetworkingConnectionState_ProblemDetectedLocally) {
-    std::cout << "Connection failed: " << pInfo->m_info.m_szEndDebug
-              << std::endl;
+  bool leaveLobby = false;
+  SteamRoomManager *roomManager = roomManager_;
+
+  {
+    std::lock_guard<std::mutex> lock(connectionsMutex);
+    std::cout << "Connection status changed: " << pInfo->m_info.m_eState
+              << " for connection " << pInfo->m_hConn << std::endl;
+    if (pInfo->m_info.m_eState ==
+        k_ESteamNetworkingConnectionState_ProblemDetectedLocally) {
+      std::cout << "Connection failed: " << pInfo->m_info.m_szEndDebug
+                << std::endl;
+      const bool failedWhileConnecting =
+          pInfo->m_eOldState == k_ESteamNetworkingConnectionState_FindingRoute ||
+          pInfo->m_eOldState == k_ESteamNetworkingConnectionState_Connecting;
+      const bool timedOutConnecting =
+          failedWhileConnecting &&
+          std::strstr(pInfo->m_info.m_szEndDebug,
+                      "Timed out attempting to connect") != nullptr;
+
+      if (failedWhileConnecting && g_isClient && !relayFallbackTried_ &&
+          g_hostSteamID.IsValid()) {
+        relayFallbackPending_ = true;
+        std::cout << "[SteamNet] Queued relay-only retry after ICE failure"
+                  << std::endl;
+      } else if (g_isClient && timedOutConnecting) {
+        leaveLobby = true;
+      }
+    }
+    if (pInfo->m_eOldState == k_ESteamNetworkingConnectionState_None &&
+        pInfo->m_info.m_eState == k_ESteamNetworkingConnectionState_Connecting) {
+      m_pInterface->AcceptConnection(pInfo->m_hConn);
+      connections.push_back(pInfo->m_hConn);
+      g_hConnection = pInfo->m_hConn;
+      g_isConnected = true;
+      std::cout << "Accepted incoming connection from "
+                << pInfo->m_info.m_identityRemote.GetSteamID().ConvertToUint64()
+                << std::endl;
+      // Log connection info
+      SteamNetConnectionInfo_t info;
+      SteamNetConnectionRealTimeStatus_t status;
+      if (m_pInterface->GetConnectionInfo(pInfo->m_hConn, &info) &&
+          m_pInterface->GetConnectionRealTimeStatus(pInfo->m_hConn, &status, 0,
+                                                    nullptr)) {
+        std::cout << "Incoming connection details: ping=" << status.m_nPing
+                  << "ms, relay=" << (info.m_idPOPRelay != 0 ? "yes" : "no")
+                  << std::endl;
+      }
+    } else if (pInfo->m_eOldState ==
+                   k_ESteamNetworkingConnectionState_Connecting &&
+               pInfo->m_info.m_eState ==
+                   k_ESteamNetworkingConnectionState_Connected) {
+      g_isConnected = true;
+      std::cout << "Connected to host" << std::endl;
+      // Log connection info
+      SteamNetConnectionInfo_t info;
+      SteamNetConnectionRealTimeStatus_t status;
+      if (m_pInterface->GetConnectionInfo(pInfo->m_hConn, &info) &&
+          m_pInterface->GetConnectionRealTimeStatus(pInfo->m_hConn, &status, 0,
+                                                    nullptr)) {
+        hostPing_ = status.m_nPing;
+        std::cout << "Outgoing connection details: ping=" << status.m_nPing
+                  << "ms, relay=" << (info.m_idPOPRelay != 0 ? "yes" : "no")
+                  << std::endl;
+      }
+    } else if (pInfo->m_info.m_eState ==
+                   k_ESteamNetworkingConnectionState_ClosedByPeer ||
+               pInfo->m_info.m_eState ==
+                   k_ESteamNetworkingConnectionState_ProblemDetectedLocally) {
+      g_isConnected = false;
+      g_hConnection = k_HSteamNetConnection_Invalid;
+      // Remove from connections
+      auto it =
+          std::find(connections.begin(), connections.end(), pInfo->m_hConn);
+      if (it != connections.end()) {
+        connections.erase(it);
+      }
+      hostPing_ = 0;
+      std::cout << "Connection closed" << std::endl;
+    }
   }
-  if (pInfo->m_eOldState == k_ESteamNetworkingConnectionState_None &&
-      pInfo->m_info.m_eState == k_ESteamNetworkingConnectionState_Connecting) {
-    m_pInterface->AcceptConnection(pInfo->m_hConn);
-    connections.push_back(pInfo->m_hConn);
-    g_hConnection = pInfo->m_hConn;
-    g_isConnected = true;
-    std::cout << "Accepted incoming connection from "
-              << pInfo->m_info.m_identityRemote.GetSteamID().ConvertToUint64()
+
+  if (leaveLobby && roomManager) {
+    std::cout << "[SteamNet] Leaving lobby after connection timeout"
               << std::endl;
-    // Log connection info
-    SteamNetConnectionInfo_t info;
-    SteamNetConnectionRealTimeStatus_t status;
-    if (m_pInterface->GetConnectionInfo(pInfo->m_hConn, &info) &&
-        m_pInterface->GetConnectionRealTimeStatus(pInfo->m_hConn, &status, 0,
-                                                  nullptr)) {
-      std::cout << "Incoming connection details: ping=" << status.m_nPing
-                << "ms, relay=" << (info.m_idPOPRelay != 0 ? "yes" : "no")
-                << std::endl;
-    }
-  } else if (pInfo->m_eOldState ==
-                 k_ESteamNetworkingConnectionState_Connecting &&
-             pInfo->m_info.m_eState ==
-                 k_ESteamNetworkingConnectionState_Connected) {
-    g_isConnected = true;
-    std::cout << "Connected to host" << std::endl;
-    // Log connection info
-    SteamNetConnectionInfo_t info;
-    SteamNetConnectionRealTimeStatus_t status;
-    if (m_pInterface->GetConnectionInfo(pInfo->m_hConn, &info) &&
-        m_pInterface->GetConnectionRealTimeStatus(pInfo->m_hConn, &status, 0,
-                                                  nullptr)) {
-      hostPing_ = status.m_nPing;
-      std::cout << "Outgoing connection details: ping=" << status.m_nPing
-                << "ms, relay=" << (info.m_idPOPRelay != 0 ? "yes" : "no")
-                << std::endl;
-    }
-  } else if (pInfo->m_info.m_eState ==
-                 k_ESteamNetworkingConnectionState_ClosedByPeer ||
-             pInfo->m_info.m_eState ==
-                 k_ESteamNetworkingConnectionState_ProblemDetectedLocally) {
-    g_isConnected = false;
-    g_hConnection = k_HSteamNetConnection_Invalid;
-    // Remove from connections
-    auto it = std::find(connections.begin(), connections.end(), pInfo->m_hConn);
-    if (it != connections.end()) {
-      connections.erase(it);
-    }
-    hostPing_ = 0;
-    std::cout << "Connection closed" << std::endl;
+    roomManager->leaveLobby();
   }
 }

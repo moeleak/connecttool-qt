@@ -6,10 +6,10 @@ import Qt5Compat.GraphicalEffects
 
 ApplicationWindow {
     id: win
-    width: 900
+    width: 1080
     height: 700
-    minimumWidth: 900
-    minimumHeight: 640
+    minimumWidth: 1080
+    minimumHeight: 700
     visible: true
     title: qsTr("ConnectTool · Steam P2P")
 
@@ -263,6 +263,21 @@ ApplicationWindow {
                                 selectByMouse: true
                             }
 
+                            ComboBox {
+                                id: modeCombo
+                                Layout.preferredWidth: 140
+                                Layout.alignment: Qt.AlignVCenter
+                                model: [
+                                    { text: qsTr("TCP 模式"), value: 0 },
+                                    { text: qsTr("TUN 模式"), value: 1 }
+                                ]
+                                textRole: "text"
+                                valueRole: "value"
+                                currentIndex: Math.max(0, Math.min(model.length - 1, backend.connectionMode))
+                                enabled: !(backend.isHost || backend.isConnected)
+                                onActivated: backend.connectionMode = model[currentIndex].value
+                            }
+
                             Switch {
                                 text: qsTr("启动")
                                 checked: backend.isHost || backend.isConnected
@@ -306,7 +321,23 @@ ApplicationWindow {
                                 model: [
                                     { title: qsTr("房间名"), value: backend.lobbyName, accent: "#7fded1" },
                                     { title: qsTr("房间 ID"), value: backend.lobbyId, accent: "#23c9a9" },
-                                    { title: qsTr("连接 IP"), value: backend.localBindPort > 0 ? qsTr("localhost:%1").arg(backend.localBindPort) : "", accent: "#2ad2ff" }
+                                    backend.connectionMode === 1
+                                    ? {
+                                        title: qsTr("TUN 信息"),
+                                        value: backend.tunLocalIp.length > 0
+                                        ? (backend.tunDeviceName.length > 0
+                                        ? qsTr("%1 · %2").arg(backend.tunLocalIp).arg(backend.tunDeviceName)
+                                        : backend.tunLocalIp)
+                                        : (backend.tunDeviceName.length > 0
+                                        ? qsTr("%1 · 待分配 IP").arg(backend.tunDeviceName)
+                                        : qsTr("未启动")),
+                                        accent: "#2ad2ff"
+                                    }
+                                    : {
+                                        title: qsTr("连接 IP"),
+                                        value: backend.localBindPort > 0 ? qsTr("localhost:%1").arg(backend.localBindPort) : "",
+                                        accent: "#2ad2ff"
+                                    }
                                 ]
                                 delegate: Rectangle {
                                     required property string title
@@ -358,6 +389,7 @@ ApplicationWindow {
                         }
 
                         RowLayout {
+                            visible: backend.connectionMode === 0
                             Layout.fillWidth: true
                             spacing: 10
 
@@ -372,7 +404,7 @@ ApplicationWindow {
                                 to: 65535
                                 value: backend.localPort
                                 editable: true
-                                enabled: !(backend.isHost || backend.isConnected)
+                                enabled: backend.connectionMode === 0 && !(backend.isHost || backend.isConnected)
                                 onValueChanged: backend.localPort = value
                             }
 
@@ -389,7 +421,7 @@ ApplicationWindow {
                                 to: 65535
                                 value: backend.localBindPort
                                 editable: true
-                                enabled: !(backend.isHost || backend.isConnected)
+                                enabled: backend.connectionMode === 0 && !(backend.isHost || backend.isConnected)
                                 onValueChanged: backend.localBindPort = value
                             }
 
@@ -453,16 +485,17 @@ ApplicationWindow {
                                                 required property string displayName
                                                 required property string steamId
                                                 required property string avatar
+                                                required property string ip
                                                 required property var ping
                                                 required property string relay
                                                 required property bool isFriend
+
                                                 radius: 10
                                                 color: "#162033"
                                                 border.color: "#1f2f45"
                                                 width: parent ? parent.width : 0
-                                                height: implicitHeight
+                                                // 高度由内部布局决定，并增加一些内边距
                                                 implicitHeight: rowLayout.implicitHeight + 24
-                                                Component.onCompleted: console.log("[QML] member delegate", displayName, steamId, ping, relay)
 
                                                 RowLayout {
                                                     id: rowLayout
@@ -470,6 +503,7 @@ ApplicationWindow {
                                                     anchors.margins: 12
                                                     spacing: 12
 
+                                                    // --- 1. 头像区域 (保持不变) ---
                                                     Item {
                                                         width: 48
                                                         height: 48
@@ -509,19 +543,19 @@ ApplicationWindow {
                                                         }
                                                     }
 
+                                                    // --- 2. 用户信息列 (保持不变) ---
                                                     ColumnLayout {
                                                         spacing: 4
-                                                        Layout.fillWidth: true
+                                                        Layout.fillWidth: false // 不要占满，只占需要宽度
+                                                        Layout.alignment: Qt.AlignVCenter // 垂直居中
+
                                                         RowLayout {
-                                                            Layout.fillWidth: true
                                                             spacing: 8
                                                             Label {
                                                                 text: displayName
                                                                 font.pixelSize: 16
                                                                 color: "#e1edff"
                                                                 elide: Text.ElideRight
-                                                                horizontalAlignment: Text.AlignLeft
-                                                                Layout.fillWidth: true
                                                             }
                                                             Rectangle {
                                                                 radius: 8
@@ -544,17 +578,43 @@ ApplicationWindow {
                                                             font.pixelSize: 12
                                                             color: "#7f8cab"
                                                             elide: Text.ElideRight
-                                                            horizontalAlignment: Text.AlignLeft
+                                                        }
+                                                        Label {
+                                                            visible: backend.connectionMode === 1
+                                                            text: qsTr("IP: %1").arg(ip && ip.length > 0 ? ip : qsTr("-"))
+                                                            font.pixelSize: 12
+                                                            color: "#7f8cab"
+                                                            elide: Text.ElideRight
                                                         }
                                                     }
 
+                                                    // --- 3. 关键占位符 (Spacer) ---
+                                                    // 这个 Item 会占据中间所有剩余空间，把后面的 Ping 和 按钮 推到最右边
+                                                    Item {
+                                                        Layout.fillWidth: true
+                                                    }
+
+                                                    Button {
+                                                        visible: !isFriend
+                                                        text: qsTr("添加好友")
+                                                        Layout.alignment: Qt.AlignVCenter
+                                                        onClicked: backend.addFriend(steamId)
+                                                    }
+
+                                                    Button {
+                                                        visible: backend.connectionMode === 1 && ip && ip.length > 0
+                                                        text: qsTr("复制 IP")
+                                                        flat: true
+                                                        Layout.alignment: Qt.AlignVCenter
+                                                        onClicked: backend.copyToClipboard(ip)
+                                                    }
+
+                                                    // --- 4. Ping 信息列 ---
                                                     ColumnLayout {
                                                         spacing: 2
-                                                        Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
+                                                        Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
                                                         Label {
-                                                            text: (ping === undefined || ping === null)
-                                                                  ? qsTr("-")
-                                                                  : qsTr("%1 ms").arg(ping)
+                                                            text: (ping === undefined || ping === null) ? qsTr("-") : qsTr("%1 ms").arg(ping)
                                                             color: "#7fded1"
                                                             font.pixelSize: 14
                                                             horizontalAlignment: Text.AlignRight
@@ -564,20 +624,13 @@ ApplicationWindow {
                                                             text: relay.length > 0 ? relay : "-"
                                                             color: "#8ea4c8"
                                                             font.pixelSize: 12
-                                                            elide: Text.ElideRight
                                                             horizontalAlignment: Text.AlignRight
                                                             Layout.alignment: Qt.AlignRight
                                                         }
                                                     }
-                                                    Button {
-                                                        visible: !isFriend
-                                                        text: qsTr("添加好友")
-                                                        Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
-                                                        onClicked: {
-                                                            console.log("[QML] addFriend click", steamId)
-                                                            backend.addFriend(steamId)
-                                                        }
-                                                    }
+
+                                                    // --- 5. 按钮区域 (移动到这里) ---
+                                                    // 直接放在 RowLayout 中，它们会自动排列在 Ping 信息右侧
                                                 }
                                             }
                                         }
@@ -774,8 +827,8 @@ ApplicationWindow {
                                             Item { Layout.fillWidth: true }
                                             Button {
                                                 text: inviteCooldown === 0
-                                                      ? qsTr("邀请")
-                                                      : qsTr("等待 %1s").arg(inviteCooldown)
+                                                ? qsTr("邀请")
+                                                : qsTr("等待 %1s").arg(inviteCooldown)
                                                 enabled: (backend.isHost || backend.isConnected) && inviteCooldown === 0
                                                 Layout.alignment: Qt.AlignVCenter
                                                 onClicked: backend.inviteFriend(steamId)
@@ -942,7 +995,11 @@ ApplicationWindow {
                                                         spacing: 8
                                                         Layout.fillWidth: true
                                                         Label {
-                                                            text: name.length > 0 ? name : qsTr("未命名房间")
+                                                            text: name.length > 0
+                                                                  ? name
+                                                                  : (hostName.length > 0
+                                                                     ? qsTr("%1 的房间").arg(hostName)
+                                                                     : qsTr("未命名房间"))
                                                             font.pixelSize: 16
                                                             color: "#e1edff"
                                                             elide: Text.ElideRight

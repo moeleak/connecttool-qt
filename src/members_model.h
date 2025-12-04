@@ -15,7 +15,8 @@ public:
     AvatarRole,
     PingRole,
     RelayRole,
-    IsFriendRole
+    IsFriendRole,
+    IpRole
   };
 
   struct Entry {
@@ -25,6 +26,7 @@ public:
     int ping = -1;
     QString relay;
     bool isFriend = false;
+    QString ip;
   };
 
   explicit MembersModel(QObject *parent = nullptr);

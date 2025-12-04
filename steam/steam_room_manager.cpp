@@ -1,6 +1,8 @@
 #include "steam_room_manager.h"
 #include "steam_networking_manager.h"
+#include "steam_vpn_networking_manager.h"
 #include <algorithm>
+#include <cstring>
 #include <iostream>
 #include <isteamnetworkingutils.h>
 #include <utility>
@@ -13,6 +15,8 @@ constexpr const char *kLobbyKeyPingLocation = "ct_ping_loc";
 constexpr const char *kLobbyKeyTag = "ct_tag";
 constexpr const char *kLobbyTagValue = "1";
 constexpr const char *kPingPrefix = "PING|";
+constexpr const char *kLobbyModeTun = "tun";
+constexpr const char *kLobbyModeTcp = "tcp";
 } // namespace
 
 SteamFriendsCallbacks::SteamFriendsCallbacks(SteamNetworkingManager *manager,
@@ -156,9 +160,9 @@ void SteamMatchmakingCallbacks::OnLobbyListReceived(LobbyMatchList_t *pCallback,
   }
 
   // Ensure current lobby is present even if not returned by filter (e.g. host
-  //未设置标签或区域过滤不同)
+  //未设置标签或区域过滤不同). Skip when lobby is intentionally unlisted.
   CSteamID current = roomManager_->getCurrentLobby();
-  if (current.IsValid()) {
+  if (current.IsValid() && roomManager_->publishLobby_) {
     const uint64 currentVal = current.ConvertToUint64();
     const bool exists = std::any_of(
         infos.begin(), infos.end(),
@@ -218,10 +222,42 @@ void SteamMatchmakingCallbacks::OnLobbyEntered(LobbyEnter_t *pCallback) {
     }
     std::cout << "Entered lobby: " << pCallback->m_ulSteamIDLobby << std::endl;
 
+    const bool lobbyIsTun = roomManager_->lobbyWantsTun(
+        CSteamID(pCallback->m_ulSteamIDLobby));
+    if (lobbyIsTun) {
+      roomManager_->vpnMode_ = true;
+    }
+    if (roomManager_->lobbyModeChangedCallback_) {
+      roomManager_->lobbyModeChangedCallback_(lobbyIsTun,
+                                              roomManager_->getCurrentLobby());
+    }
+
     // Set Rich Presence to enable invite functionality
     SteamFriends()->SetRichPresence("steam_display", "#Status_InLobby");
     SteamFriends()->SetRichPresence(
         "connect", std::to_string(pCallback->m_ulSteamIDLobby).c_str());
+
+    if (roomManager_->vpnMode_) {
+      const CSteamID hostID =
+          SteamMatchmaking()->GetLobbyOwner(pCallback->m_ulSteamIDLobby);
+      if (roomManager_->vpnNetworkingManager_) {
+        const CSteamID mySteamID = SteamUser()->GetSteamID();
+        const int numMembers =
+            SteamMatchmaking()->GetNumLobbyMembers(pCallback->m_ulSteamIDLobby);
+        for (int i = 0; i < numMembers; ++i) {
+          CSteamID memberID =
+              SteamMatchmaking()->GetLobbyMemberByIndex(
+                  pCallback->m_ulSteamIDLobby, i);
+          if (memberID != mySteamID) {
+            roomManager_->vpnNetworkingManager_->addPeer(memberID);
+          }
+        }
+      }
+      if (SteamUser() && hostID == SteamUser()->GetSteamID()) {
+        roomManager_->refreshLobbyMetadata();
+      }
+      return;
+    }
 
     // Only join host if not the host
     if (!manager_->isHost()) {
@@ -271,12 +307,27 @@ void SteamMatchmakingCallbacks::OnLobbyChatUpdate(
       (changeFlags & k_EChatMemberStateChangeDisconnected) ||
       (changeFlags & k_EChatMemberStateChangeKicked) ||
       (changeFlags & k_EChatMemberStateChangeBanned);
+  CSteamID changedUser = CSteamID(pCallback->m_ulSteamIDUserChanged);
+
+  if (roomManager_->vpnMode_) {
+    const CSteamID mySteamId = SteamUser()->GetSteamID();
+    if ((changeFlags & k_EChatMemberStateChangeEntered) &&
+        roomManager_->vpnNetworkingManager_ && changedUser != mySteamId) {
+      roomManager_->vpnNetworkingManager_->addPeer(changedUser);
+    } else if (memberLeft && roomManager_->vpnNetworkingManager_) {
+      roomManager_->vpnNetworkingManager_->removePeer(changedUser);
+    }
+    if (memberLeft && changedUser == manager_->getHostSteamID() &&
+        !manager_->isHost() && roomManager_->hostLeftCallback_) {
+      roomManager_->hostLeftCallback_();
+    }
+    return;
+  }
 
   if (!memberLeft) {
     return;
   }
 
-  CSteamID changedUser = CSteamID(pCallback->m_ulSteamIDUserChanged);
   if (changedUser == manager_->getHostSteamID() && !manager_->isHost()) {
     std::cout << "Host left lobby, disconnecting client locally" << std::endl;
     manager_->disconnect();
@@ -294,6 +345,17 @@ SteamRoomManager::SteamRoomManager(SteamNetworkingManager *networkingManager)
   // Clear Rich Presence on initialization to prevent "Invite to game" showing
   // when not in a lobby
   SteamFriends()->ClearRichPresence();
+}
+
+void SteamRoomManager::setVpnMode(bool enabled,
+                                  SteamVpnNetworkingManager *vpnManager) {
+  vpnMode_ = enabled;
+  vpnNetworkingManager_ = vpnManager;
+}
+
+void SteamRoomManager::setLobbyModeChangedCallback(
+    std::function<void(bool wantsTun, const CSteamID &lobby)> callback) {
+  lobbyModeChangedCallback_ = std::move(callback);
 }
 
 SteamRoomManager::~SteamRoomManager() {
@@ -321,6 +383,9 @@ void SteamRoomManager::leaveLobby() {
     currentLobby = k_steamIDNil;
     if (networkingManager_) {
       networkingManager_->setHostSteamID(CSteamID());
+    }
+    if (vpnMode_ && vpnNetworkingManager_) {
+      vpnNetworkingManager_->clearPeers();
     }
     remotePings_.clear();
 
@@ -355,17 +420,18 @@ bool SteamRoomManager::searchLobbies() {
 }
 
 bool SteamRoomManager::joinLobby(CSteamID lobbyID) {
-  if (SteamMatchmaking()->JoinLobby(lobbyID) != k_EResultOK) {
-    std::cerr << "Failed to join lobby" << std::endl;
-    return false;
-  }
-  // Connection will be handled by callback
+  SteamMatchmaking()->JoinLobby(lobbyID);
+  // Connection result will be delivered asynchronously via OnLobbyEntered.
   return true;
 }
 
 bool SteamRoomManager::startHosting() {
   if (!createLobby()) {
     return false;
+  }
+
+  if (vpnMode_) {
+    return true;
   }
 
   networkingManager_->getListenSock() =
@@ -432,11 +498,19 @@ void SteamRoomManager::setLobbyListCallback(
   lobbyListCallback_ = std::move(callback);
 }
 
+void SteamRoomManager::setHostLeftCallback(std::function<void()> callback) {
+  hostLeftCallback_ = std::move(callback);
+}
+
 void SteamRoomManager::refreshLobbyMetadata() {
   if (currentLobby == k_steamIDNil || !SteamMatchmaking()) {
     return;
   }
-  if (!networkingManager_ || !networkingManager_->isHost()) {
+  const bool isOwner = SteamUser() &&
+                       SteamMatchmaking()->GetLobbyOwner(currentLobby) ==
+                           SteamUser()->GetSteamID();
+  if (!networkingManager_ ||
+      (!networkingManager_->isHost() && !(vpnMode_ && isOwner))) {
     return;
   }
 
@@ -446,6 +520,7 @@ void SteamRoomManager::refreshLobbyMetadata() {
     SteamMatchmaking()->DeleteLobbyData(currentLobby, kLobbyKeyHostId);
     SteamMatchmaking()->DeleteLobbyData(currentLobby, kLobbyKeyHostName);
     SteamMatchmaking()->DeleteLobbyData(currentLobby, kLobbyKeyPingLocation);
+    SteamMatchmaking()->DeleteLobbyData(currentLobby, kLobbyKeyMode);
     return;
   }
 
@@ -486,9 +561,14 @@ void SteamRoomManager::refreshLobbyMetadata() {
     SteamMatchmaking()->SetLobbyData(currentLobby, kLobbyKeyPingLocation,
                                      buffer);
   }
+  SteamMatchmaking()->SetLobbyData(currentLobby, kLobbyKeyMode,
+                                   vpnMode_ ? kLobbyModeTun : kLobbyModeTcp);
 }
 
 void SteamRoomManager::decideTransportForCurrentLobby() {
+  if (vpnMode_) {
+    return;
+  }
   if (!networkingManager_ || networkingManager_->isHost()) {
     return;
   }
@@ -607,4 +687,12 @@ bool SteamRoomManager::getRemotePing(const CSteamID &id, int &ping,
   ping = it->second.ping;
   relay = it->second.relay;
   return ping >= 0;
+}
+
+bool SteamRoomManager::lobbyWantsTun(CSteamID lobby) const {
+  if (!SteamMatchmaking()) {
+    return false;
+  }
+  const char *mode = SteamMatchmaking()->GetLobbyData(lobby, kLobbyKeyMode);
+  return mode && strcmp(mode, kLobbyModeTun) == 0;
 }

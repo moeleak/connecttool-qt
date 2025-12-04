@@ -177,6 +177,19 @@ jobs:
           QmlImports = runtime/qml
           Translations = runtime/translations
           EOF
+      - name: Bundle Wintun runtime (Windows)
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:GITHUB_WORKSPACE 'install'
+          $tmp = Join-Path $env:RUNNER_TEMP 'wintun'
+          $zip = Join-Path $env:RUNNER_TEMP 'wintun.zip'
+          Invoke-WebRequest -Uri 'https://www.wintun.net/builds/wintun-0.14.1.zip' -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath $tmp -Force
+          $dll = Get-ChildItem -Path $tmp -Recurse -Filter 'wintun.dll' | Where-Object { $_.FullName -match 'amd64|x64' } | Select-Object -First 1
+          if (-not $dll) {
+            throw "wintun.dll not found in downloaded archive"
+          }
+          Copy-Item $dll.FullName -Destination (Join-Path $dest 'wintun.dll') -Force
       - name: Remove MSVC redistributable installer (Windows)
         shell: bash
         run: |

@@ -22,6 +22,8 @@ QVariant MembersModel::data(const QModelIndex &index, int role) const {
     return entry.displayName;
   case SteamIdRole:
     return entry.steamId;
+  case IpRole:
+    return entry.ip;
   case AvatarRole:
     return entry.avatar;
   case PingRole:
@@ -39,6 +41,7 @@ QHash<int, QByteArray> MembersModel::roleNames() const {
   QHash<int, QByteArray> roles;
   roles[SteamIdRole] = "steamId";
   roles[DisplayNameRole] = "displayName";
+  roles[IpRole] = "ip";
   roles[AvatarRole] = "avatar";
   roles[PingRole] = "ping";
   roles[RelayRole] = "relay";
@@ -62,7 +65,8 @@ void MembersModel::setMembers(std::vector<Entry> entries) {
         entries[i].avatar != entries_[i].avatar ||
         entries[i].ping != entries_[i].ping ||
         entries[i].relay != entries_[i].relay ||
-        entries[i].isFriend != entries_[i].isFriend) {
+        entries[i].isFriend != entries_[i].isFriend ||
+        entries[i].ip != entries_[i].ip) {
       changed = true;
       break;
     }

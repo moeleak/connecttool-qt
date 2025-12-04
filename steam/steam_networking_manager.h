@@ -14,6 +14,7 @@
 // Forward declarations
 class TCPServer;
 class SteamNetworkingManager;
+class SteamRoomManager;
 
 // User info structure
 struct UserInfo {
@@ -51,6 +52,7 @@ public:
   std::string getConnectionRelayInfo(HSteamNetConnection conn) const;
   int estimateRelayPingMs() const;
   void applyTransportPreference(int directPingMs, int relayPingMs);
+  void setRoomManager(SteamRoomManager *roomManager) { roomManager_ = roomManager; }
 
   // For SteamRoomManager access
   std::unique_ptr<TCPServer> *&getServer() { return server_; }
@@ -78,6 +80,8 @@ public:
   CSteamID getHostSteamID() const { return g_hostSteamID; }
 
 private:
+  bool connectToHostInternal(const CSteamID &hostSteamID, bool relayOnly);
+
   // Steam API
   ISteamNetworkingSockets *m_pInterface;
 
@@ -105,6 +109,10 @@ private:
   int *localPort_;
   int *localBindPort_;
   SteamMessageHandler *messageHandler_;
+  SteamRoomManager *roomManager_;
+
+  bool relayFallbackPending_;
+  bool relayFallbackTried_;
 
   // Callback
   static void OnSteamNetConnectionStatusChanged(
