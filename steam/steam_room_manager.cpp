@@ -32,7 +32,9 @@ void SteamFriendsCallbacks::OnGameLobbyJoinRequested(
   if (manager_) {
     CSteamID lobbyID = pCallback->m_steamIDLobby;
     std::cout << "Lobby ID: " << lobbyID.ConvertToUint64() << std::endl;
-    if (!manager_->isHost() && !manager_->isConnected()) {
+    if (roomManager_ && roomManager_->lobbyInviteCallback_) {
+      roomManager_->lobbyInviteCallback_(lobbyID);
+    } else if (!manager_->isHost() && !manager_->isConnected()) {
       std::cout << "Joining lobby from request: " << lobbyID.ConvertToUint64()
                 << std::endl;
       roomManager_->joinLobby(lobbyID);
@@ -356,14 +358,15 @@ void SteamMatchmakingCallbacks::OnLobbyChatUpdate(
     return;
   }
 
-  if (!memberLeft) {
-    return;
-  }
-
-  if (changedUser == manager_->getHostSteamID() && !manager_->isHost()) {
-    std::cout << "Host left lobby, disconnecting client locally" << std::endl;
-    manager_->disconnect();
-    roomManager_->leaveLobby();
+  if (memberLeft) {
+    if (manager_->isHost()) {
+      manager_->closeConnectionToPeer(changedUser);
+    } else if (changedUser == manager_->getHostSteamID()) {
+      std::cout << "Host left lobby, disconnecting client locally"
+                << std::endl;
+      manager_->disconnect();
+      roomManager_->leaveLobby();
+    }
   }
 }
 
@@ -388,6 +391,11 @@ void SteamRoomManager::setVpnMode(bool enabled,
 void SteamRoomManager::setLobbyModeChangedCallback(
     std::function<void(bool wantsTun, const CSteamID &lobby)> callback) {
   lobbyModeChangedCallback_ = std::move(callback);
+}
+
+void SteamRoomManager::setLobbyInviteCallback(
+    std::function<void(const CSteamID &lobby)> callback) {
+  lobbyInviteCallback_ = std::move(callback);
 }
 
 SteamRoomManager::~SteamRoomManager() {

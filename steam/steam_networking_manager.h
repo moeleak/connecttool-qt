@@ -45,6 +45,7 @@ public:
     return connections;
   }
   std::mutex &getConnectionsMutex() { return connectionsMutex; }
+  void closeConnectionToPeer(const CSteamID &peer);
   int getHostPing() const { return hostPing_; }
   int getConnectionPing(HSteamNetConnection conn) const;
   HSteamNetConnection getConnection() const { return g_hConnection; }

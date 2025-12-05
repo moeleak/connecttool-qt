@@ -99,6 +99,8 @@ public:
   bool vpnMode() const { return vpnMode_; }
   void setLobbyModeChangedCallback(
       std::function<void(bool wantsTun, const CSteamID &lobby)> callback);
+  void setLobbyInviteCallback(
+      std::function<void(const CSteamID &lobby)> callback);
 
 private:
   friend class SteamMatchmakingCallbacks;
@@ -131,6 +133,7 @@ private:
   bool vpnMode_ = false;
   std::function<void(bool wantsTun, const CSteamID &lobby)>
       lobbyModeChangedCallback_;
+  std::function<void(const CSteamID &)> lobbyInviteCallback_;
   std::function<void()> hostLeftCallback_;
   std::function<void(const CSteamID &, const std::string &)>
       chatMessageCallback_;

@@ -206,6 +206,16 @@ Backend::Backend(QObject *parent)
   roomManager_->setAdvertisedMode(inTunMode());
   roomManager_->setLobbyName(roomName_.toStdString());
   roomManager_->setPublishLobby(publishLobby_);
+  roomManager_->setLobbyInviteCallback([this](const CSteamID &lobby) {
+    const QString lobbyStr = QString::number(lobby.ConvertToUint64());
+    QMetaObject::invokeMethod(
+        this,
+        [this, lobbyStr]() {
+          setJoinTargetFromLobby(lobbyStr);
+          joinLobby(lobbyStr);
+        },
+        Qt::QueuedConnection);
+  });
   roomManager_->setLobbyModeChangedCallback([this](bool wantsTun,
                                                    const CSteamID &lobby) {
     QMetaObject::invokeMethod(
@@ -495,6 +505,7 @@ void Backend::startHosting() {
       vpnConnected_ = true;
       vpnBridge_->rebroadcastState();
       updateStatus();
+      refreshLobbies();
     } else {
       qWarning() << tr("创建房间失败，请检查 Steam 状态。");
       vpnHosting_ = false;
@@ -505,6 +516,7 @@ void Backend::startHosting() {
   if (roomManager_ && roomManager_->startHosting()) {
     steamManager_->setHostSteamID(SteamUser()->GetSteamID());
     updateStatus();
+    refreshLobbies();
   } else {
     qWarning() << tr("创建房间失败，请检查 Steam 状态。");
   }
@@ -682,6 +694,7 @@ void Backend::joinHost() {
         vpnConnected_ = true;
         vpnBridge_->rebroadcastState();
         updateStatus();
+        refreshLobbies();
       } else {
         qWarning() << tr("无法加入房间。");
       }
@@ -699,6 +712,7 @@ void Backend::joinHost() {
       vpnHosting_ = false;
       vpnConnected_ = true;
       updateStatus();
+      refreshLobbies();
     }
     return;
   }
@@ -711,6 +725,7 @@ void Backend::joinHost() {
     setJoinTargetFromLobby(trimmedTarget);
     if (roomManager_ && roomManager_->joinLobby(targetSteamID)) {
       updateStatus();
+      refreshLobbies();
     } else {
       qWarning() << tr("无法加入房间。");
     }
@@ -720,6 +735,7 @@ void Backend::joinHost() {
   if (steamManager_->joinHost(hostID)) {
     ensureServerRunning();
     updateStatus();
+    refreshLobbies();
   } else {
     qWarning() << tr("无法连接到房主。");
   }
@@ -774,6 +790,7 @@ void Backend::joinLobby(const QString &lobbyId) {
       vpnConnected_ = true;
       vpnBridge_->rebroadcastState();
       updateStatus();
+      refreshLobbies();
     } else {
       qWarning() << tr("无法加入房间。");
     }
@@ -790,6 +807,7 @@ void Backend::joinLobby(const QString &lobbyId) {
   setJoinTargetFromLobby(trimmedId);
   if (roomManager_ && roomManager_->joinLobby(lobby)) {
     updateStatus();
+    refreshLobbies();
   } else {
     qWarning() << tr("无法加入房间。");
   }

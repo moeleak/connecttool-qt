@@ -223,6 +223,41 @@ void SteamNetworkingManager::disconnect() {
   std::cout << "Disconnected from network" << std::endl;
 }
 
+void SteamNetworkingManager::closeConnectionToPeer(const CSteamID &peer) {
+  std::lock_guard<std::mutex> lock(connectionsMutex);
+  if (!m_pInterface || !peer.IsValid()) {
+    return;
+  }
+
+  // If we are the client, check the single connection to host
+  if (g_hConnection != k_HSteamNetConnection_Invalid) {
+    SteamNetConnectionInfo_t info;
+    if (m_pInterface->GetConnectionInfo(g_hConnection, &info) &&
+        info.m_identityRemote.GetSteamID() == peer) {
+      std::cout << "[SteamNet] Closing connection to peer "
+                << peer.ConvertToUint64() << std::endl;
+      m_pInterface->CloseConnection(g_hConnection, 0, nullptr, false);
+      g_hConnection = k_HSteamNetConnection_Invalid;
+      g_isConnected = false;
+      hostPing_ = 0;
+    }
+  }
+
+  // Close any host-side connections matching the peer
+  for (auto it = connections.begin(); it != connections.end();) {
+    SteamNetConnectionInfo_t info;
+    if (m_pInterface->GetConnectionInfo(*it, &info) &&
+        info.m_identityRemote.GetSteamID() == peer) {
+      std::cout << "[SteamNet] Closing host connection to peer "
+                << peer.ConvertToUint64() << std::endl;
+      m_pInterface->CloseConnection(*it, 0, nullptr, false);
+      it = connections.erase(it);
+      continue;
+    }
+    ++it;
+  }
+}
+
 void SteamNetworkingManager::setMessageHandlerDependencies(
     boost::asio::io_context &io_context, std::unique_ptr<TCPServer> &server,
     int &localPort, int &localBindPort) {

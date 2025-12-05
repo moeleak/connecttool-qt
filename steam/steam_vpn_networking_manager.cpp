@@ -133,28 +133,29 @@ void SteamVpnNetworkingManager::addPeer(CSteamID peerID) {
     std::lock_guard<std::mutex> lock(peersMutex_);
     isNew = peers_.insert(peerID).second;
   }
-  if (isNew) {
-    SteamNetworkingIdentity identity;
-    identity.SetSteamID(peerID);
-    messagesInterface_->AcceptSessionWithUser(identity);
-    VpnMessageHeader hello{};
-    hello.type = VpnMessageType::SESSION_HELLO;
-    hello.length = 0;
-    const int flags = k_nSteamNetworkingSend_Reliable |
-                      k_nSteamNetworkingSend_AutoRestartBrokenSession;
-    const EResult result = messagesInterface_->SendMessageToUser(
-        identity, &hello, sizeof(hello), flags, VPN_CHANNEL);
-    if (result == k_EResultOK) {
-      std::cout << "[SteamVPN] Sent SESSION_HELLO to "
-                << peerID.ConvertToUint64() << std::endl;
-    } else {
-      std::cout << "[SteamVPN] Failed to send SESSION_HELLO to "
-                << peerID.ConvertToUint64() << ", result: " << result
-                << std::endl;
-    }
-    if (vpnBridge_) {
-      vpnBridge_->onUserJoined(peerID);
-    }
+  // Force a fresh session even if we already know this peer, so reconnects
+  // after a leave/rejoin can renegotiate cleanly.
+  SteamNetworkingIdentity identity;
+  identity.SetSteamID(peerID);
+  messagesInterface_->CloseSessionWithUser(identity);
+  messagesInterface_->AcceptSessionWithUser(identity);
+  VpnMessageHeader hello{};
+  hello.type = VpnMessageType::SESSION_HELLO;
+  hello.length = 0;
+  const int flags = k_nSteamNetworkingSend_Reliable |
+                    k_nSteamNetworkingSend_AutoRestartBrokenSession;
+  const EResult result = messagesInterface_->SendMessageToUser(
+      identity, &hello, sizeof(hello), flags, VPN_CHANNEL);
+  if (result == k_EResultOK) {
+    std::cout << "[SteamVPN] Sent SESSION_HELLO to "
+              << peerID.ConvertToUint64() << std::endl;
+  } else {
+    std::cout << "[SteamVPN] Failed to send SESSION_HELLO to "
+              << peerID.ConvertToUint64() << ", result: " << result
+              << std::endl;
+  }
+  if (vpnBridge_) {
+    vpnBridge_->onUserJoined(peerID);
   }
 }
 
@@ -299,4 +300,5 @@ void SteamVpnNetworkingManager::OnSessionFailed(
   std::cout << "[SteamVPN] Session failed with "
             << remoteSteamID.ConvertToUint64() << ": "
             << pCallback->m_info.m_szEndDebug << std::endl;
+  removePeer(remoteSteamID);
 }
