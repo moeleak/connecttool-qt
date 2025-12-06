@@ -84,7 +84,7 @@
                 qttools
                 qt5compat
               ])
-              ++ (if pkgs.stdenv.isLinux then [ pkgs.qt6.qtwayland ] else [ ])
+              ++ (if pkgs.stdenv.isLinux then [ pkgs.qt6.qtwayland pkgs.alsa-lib ] else [ ])
               ++ [ pkgs.boost ];
 
             cmakeFlags = [

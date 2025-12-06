@@ -895,6 +895,13 @@ ApplicationWindow {
                                         Layout.alignment: Qt.AlignVCenter
                                         onClicked: chatFrame.sendMessage()
                                     }
+
+                                    Switch {
+                                        text: qsTr("提醒")
+                                        checked: backend.messageAlertsEnabled
+                                        Layout.alignment: Qt.AlignVCenter
+                                        onToggled: backend.messageAlertsEnabled = checked
+                                    }
                                 }
                             }
 

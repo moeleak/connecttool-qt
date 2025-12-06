@@ -83,6 +83,8 @@ class Backend : public QObject {
                  updateDownloadChanged)
   Q_PROPERTY(QString downloadSavedPath READ downloadSavedPath NOTIFY
                  updateDownloadChanged)
+  Q_PROPERTY(bool messageAlertsEnabled READ messageAlertsEnabled WRITE
+                 setMessageAlertsEnabled NOTIFY stateChanged)
 
 public:
   enum class ConnectionMode { Tcp = 0, Tun = 1 };
@@ -130,6 +132,7 @@ public:
   bool downloadingUpdate() const { return downloadingUpdate_; }
   double downloadProgress() const { return downloadProgress_; }
   QString downloadSavedPath() const { return downloadSavedPath_; }
+  bool messageAlertsEnabled() const { return messageAlertsEnabled_; }
 
   void setJoinTarget(const QString &id);
   void setPublishLobby(bool publish);
@@ -140,6 +143,7 @@ public:
   void setLobbyFilter(const QString &text);
   void setLobbySortMode(int mode);
   void setConnectionMode(int mode);
+  void setMessageAlertsEnabled(bool enabled);
   void handleLobbyModeChanged(bool wantsTun, const CSteamID &lobby);
 
   Q_INVOKABLE void startHosting();
@@ -284,6 +288,7 @@ private:
   QString tunDeviceName_;
   int relayPingMs_ = -1;
   QVariantList relayPops_;
+  bool messageAlertsEnabled_ = true;
   // Update info
   QString appVersion_;
   QString latestVersion_;

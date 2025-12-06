@@ -13,6 +13,7 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
+#include <QFile>
 #include <QGuiApplication>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -23,6 +24,7 @@
 #include <QNetworkRequest>
 #include <QProcess>
 #include <QQmlEngine>
+#include <QByteArray>
 #include <QSaveFile>
 #include <QSettings>
 #include <QStandardPaths>
@@ -31,7 +33,12 @@
 #include <QtDebug>
 #include <algorithm>
 #include <array>
+#include <cstddef>
 #include <chrono>
+#include <cmath>
+#include <cstring>
+#include <cstdio>
+#include <cerrno>
 #include <isteamnetworkingutils.h>
 #include <limits>
 #ifdef Q_OS_WIN
@@ -39,6 +46,13 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <mmsystem.h>
+#elif defined(Q_OS_MAC)
+#include <AudioToolbox/AudioServices.h>
+#include <objc/message.h>
+#include <objc/runtime.h>
+#elif defined(Q_OS_LINUX) && defined(HAVE_ALSA)
+#include <alsa/asoundlib.h>
 #endif
 #if defined(Q_OS_UNIX)
 #include <unistd.h>
@@ -140,6 +154,341 @@ QString renderPopId(SteamNetworkingPOPID pop) {
   return QStringLiteral("0x%1")
       .arg(static_cast<uint32_t>(pop), 8, 16, QLatin1Char('0'))
       .toUpper();
+}
+
+QByteArray loadNotificationWave() {
+  static QByteArray cached;
+  static bool tried = false;
+  if (tried) {
+    return cached;
+  }
+  tried = true;
+  const QStringList candidates = {
+      QStringLiteral(":/qt/qml/ConnectTool/notification.wav"),
+      QStringLiteral(":/qml/ConnectTool/notification.wav"),
+      QStringLiteral(":/ConnectTool/notification.wav")};
+  for (const QString &candidate : candidates) {
+    QFile file(candidate);
+    if (file.exists() && file.open(QIODevice::ReadOnly)) {
+      cached = file.readAll();
+      file.close();
+      break;
+    }
+  }
+#ifdef Q_OS_WIN
+  if (cached.isEmpty()) {
+    // Fallback: synthesize a short tone if the bundled WAV is missing.
+    constexpr int sampleRate = 44100;
+    constexpr int durationMs = 220;
+    constexpr double frequency = 1040.0;
+    const int sampleCount = (sampleRate * durationMs) / 1000;
+    const int dataSize = sampleCount * 2; // mono 16-bit
+
+    const auto appendU32 = [&cached](uint32_t v) {
+      char bytes[4] = {static_cast<char>(v & 0xFF),
+                       static_cast<char>((v >> 8) & 0xFF),
+                       static_cast<char>((v >> 16) & 0xFF),
+                       static_cast<char>((v >> 24) & 0xFF)};
+      cached.append(bytes, 4);
+    };
+    const auto appendU16 = [&cached](uint16_t v) {
+      char bytes[2] = {static_cast<char>(v & 0xFF),
+                       static_cast<char>((v >> 8) & 0xFF)};
+      cached.append(bytes, 2);
+    };
+
+    cached.append("RIFF", 4);
+    appendU32(static_cast<uint32_t>(36 + dataSize));
+    cached.append("WAVEfmt ", 8);
+    appendU32(16);
+    appendU16(1);   // PCM
+    appendU16(1);   // mono
+    appendU32(sampleRate);
+    appendU32(sampleRate * 2);
+    appendU16(2);   // block align
+    appendU16(16);  // bits per sample
+    cached.append("data", 4);
+    appendU32(static_cast<uint32_t>(dataSize));
+
+    constexpr double twoPi = 6.28318530717958647692;
+    for (int i = 0; i < sampleCount; ++i) {
+      const double t = static_cast<double>(i) / sampleRate;
+      const double envelope = std::min(
+          1.0, std::min(t * 20.0, (durationMs / 1000.0 - t) * 20.0));
+      const double sample = std::sin(twoPi * frequency * t) * 0.35 *
+                            std::clamp(envelope, 0.0, 1.0);
+      const int16_t pcm = static_cast<int16_t>(
+          std::round(sample * static_cast<double>(
+                                   std::numeric_limits<int16_t>::max())));
+      appendU16(static_cast<uint16_t>(pcm));
+    }
+  }
+#endif
+  return cached;
+}
+
+QString ensureNotificationWaveOnDisk() {
+  static QString cachedPath;
+  const QByteArray data = loadNotificationWave();
+  if (data.isEmpty()) {
+    return QString();
+  }
+  if (!cachedPath.isEmpty() && QFile::exists(cachedPath)) {
+    return cachedPath;
+  }
+  const QString baseDir =
+      QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+  if (baseDir.isEmpty()) {
+    return QString();
+  }
+  QDir().mkpath(baseDir);
+  const QString path = QDir(baseDir).filePath(
+      QStringLiteral("connecttool_notification.wav"));
+  QFile out(path);
+  if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+    out.write(data);
+    out.close();
+    cachedPath = path;
+  }
+  return cachedPath;
+}
+
+#if defined(Q_OS_LINUX) && defined(HAVE_ALSA)
+namespace {
+uint16_t readLE16(const unsigned char *ptr) {
+  return static_cast<uint16_t>(ptr[0] | (ptr[1] << 8));
+}
+
+uint32_t readLE32(const unsigned char *ptr) {
+  return static_cast<uint32_t>(ptr[0] | (ptr[1] << 8) | (ptr[2] << 16) |
+                               (ptr[3] << 24));
+}
+
+bool parsePcm16FromWav(const QByteArray &wav, int &channels,
+                       unsigned int &sampleRate, const char *&pcmData,
+                       size_t &pcmSize) {
+  if (wav.size() < 44) {
+    return false;
+  }
+  const unsigned char *bytes =
+      reinterpret_cast<const unsigned char *>(wav.constData());
+  if (std::memcmp(bytes, "RIFF", 4) != 0 || std::memcmp(bytes + 8, "WAVE", 4) !=
+                                                0) {
+    return false;
+  }
+  size_t pos = 12;
+  bool fmtFound = false;
+  bool dataFound = false;
+  uint16_t audioFormat = 0;
+  uint16_t bitsPerSample = 0;
+
+  while (pos + 8 <= static_cast<size_t>(wav.size())) {
+    const char *chunkId =
+        reinterpret_cast<const char *>(wav.constData() + pos);
+    const uint32_t chunkSize = readLE32(bytes + pos + 4);
+    pos += 8;
+    if (pos + chunkSize > static_cast<size_t>(wav.size())) {
+      break;
+    }
+
+    if (std::memcmp(chunkId, "fmt ", 4) == 0 && chunkSize >= 16) {
+      audioFormat = readLE16(bytes + pos);
+      channels = static_cast<int>(readLE16(bytes + pos + 2));
+      sampleRate = readLE32(bytes + pos + 4);
+      bitsPerSample = readLE16(bytes + pos + 14);
+      fmtFound = true;
+    } else if (std::memcmp(chunkId, "data", 4) == 0) {
+      pcmData = reinterpret_cast<const char *>(bytes + pos);
+      pcmSize = static_cast<size_t>(chunkSize);
+      dataFound = true;
+    }
+
+    // Chunks are padded to even sizes.
+    pos += chunkSize + (chunkSize % 2);
+  }
+
+  if (!fmtFound || !dataFound) {
+    return false;
+  }
+  if (audioFormat != 1 || bitsPerSample != 16 || channels < 1 ||
+      sampleRate == 0) {
+    return false;
+  }
+  return true;
+}
+
+bool playPcmWithAlsa(const char *pcmData, size_t pcmSize, int channels,
+                     unsigned int sampleRate) {
+  if (!pcmData || pcmSize == 0) {
+    return false;
+  }
+  const size_t frameSize = static_cast<size_t>(channels) * 2;
+  if (frameSize == 0) {
+    return false;
+  }
+  const snd_pcm_format_t fmt = SND_PCM_FORMAT_S16_LE;
+  snd_pcm_t *handle = nullptr;
+  if (snd_pcm_open(&handle, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0) {
+    return false;
+  }
+
+  const int setRes = snd_pcm_set_params(handle, fmt,
+                                        SND_PCM_ACCESS_RW_INTERLEAVED, channels,
+                                        sampleRate, 1, 200000);
+  if (setRes < 0) {
+    snd_pcm_close(handle);
+    return false;
+  }
+
+  const size_t totalFrames = pcmSize / frameSize;
+  size_t framesLeft = totalFrames;
+  const char *cursor = pcmData;
+  while (framesLeft > 0) {
+    const snd_pcm_sframes_t written =
+        snd_pcm_writei(handle, cursor, framesLeft);
+    if (written < 0) {
+      if (written == -EPIPE) {
+        snd_pcm_prepare(handle);
+        continue;
+      }
+      snd_pcm_close(handle);
+      return false;
+    }
+    framesLeft -= static_cast<size_t>(written);
+    cursor += static_cast<size_t>(written) * frameSize;
+  }
+
+  snd_pcm_drain(handle);
+  snd_pcm_close(handle);
+  return true;
+}
+} // namespace
+#endif
+
+void playNotificationTone() {
+  const QByteArray wav = loadNotificationWave();
+#ifdef Q_OS_WIN
+  if (!wav.isEmpty()) {
+    PlaySoundA(reinterpret_cast<LPCSTR>(wav.constData()), nullptr,
+               SND_MEMORY | SND_ASYNC | SND_NODEFAULT);
+    return;
+  }
+#elif defined(Q_OS_MAC)
+  static SystemSoundID soundId = 0;
+  static id nsSoundObj = nullptr;
+  static bool macSoundLoaded = false;
+  bool played = false;
+  QString method;
+
+  if (!macSoundLoaded && !wav.isEmpty()) {
+    macSoundLoaded = true;
+    id nsData = ((id(*)(Class, SEL))objc_msgSend)(objc_getClass("NSData"),
+                                                 sel_registerName("alloc"));
+    nsData = ((id(*)(id, SEL, const void *, unsigned long))objc_msgSend)(
+        nsData, sel_registerName("initWithBytes:length:"), wav.constData(),
+        static_cast<unsigned long>(wav.size()));
+    if (nsData) {
+      id sndAlloc = ((id(*)(Class, SEL))objc_msgSend)(objc_getClass("NSSound"),
+                                                      sel_registerName("alloc"));
+      nsSoundObj = ((id(*)(id, SEL, id))objc_msgSend)(
+          sndAlloc, sel_registerName("initWithData:"), nsData);
+      ((void (*)(id, SEL))objc_msgSend)(nsData, sel_registerName("release"));
+      if (!nsSoundObj) {
+        ((void (*)(id, SEL))objc_msgSend)(sndAlloc, sel_registerName("release"));
+      }
+    }
+  }
+
+  if (nsSoundObj) {
+    const BOOL ok =
+        ((BOOL(*)(id, SEL))objc_msgSend)(nsSoundObj, sel_registerName("play"));
+    if (ok) {
+      played = true;
+      method = QStringLiteral("NSSound(memory)");
+    }
+  }
+
+  QString path;
+  if (!played) {
+    path = ensureNotificationWaveOnDisk();
+    if (soundId == 0 && !path.isEmpty()) {
+      CFStringRef cfPath = CFStringCreateWithCharacters(
+          kCFAllocatorDefault, reinterpret_cast<const UniChar *>(path.utf16()),
+          static_cast<CFIndex>(path.length()));
+      if (cfPath) {
+        CFURLRef url = CFURLCreateWithFileSystemPath(
+            kCFAllocatorDefault, cfPath, kCFURLPOSIXPathStyle, false);
+        if (url) {
+          if (AudioServicesCreateSystemSoundID(url, &soundId) !=
+              kAudioServicesNoError) {
+            soundId = 0;
+          }
+          CFRelease(url);
+        }
+        CFRelease(cfPath);
+      }
+    }
+    if (soundId != 0) {
+      AudioServicesPlaySystemSound(soundId);
+      played = true;
+      method = QStringLiteral("AudioServices(SystemSoundID)");
+    } else if (!path.isEmpty() && !nsSoundObj) {
+      id nsString = ((id(*)(Class, SEL, const char *))objc_msgSend)(
+          objc_getClass("NSString"), sel_registerName("stringWithUTF8String:"),
+          path.toUtf8().constData());
+      if (nsString) {
+        id nsSound = ((id(*)(Class, SEL))objc_msgSend)(
+            objc_getClass("NSSound"), sel_registerName("alloc"));
+        nsSound = ((id(*)(id, SEL, id, BOOL))objc_msgSend)(
+            nsSound, sel_registerName("initWithContentsOfFile:byReference:"),
+            nsString, YES);
+        if (nsSound) {
+          const BOOL ok = ((BOOL(*)(id, SEL))objc_msgSend)(
+              nsSound, sel_registerName("play"));
+          if (ok) {
+            nsSoundObj = nsSound;
+            played = true;
+            method = QStringLiteral("NSSound(file)");
+          } else {
+            ((void (*)(id, SEL))objc_msgSend)(nsSound,
+                                              sel_registerName("release"));
+          }
+        }
+        ((void (*)(id, SEL))objc_msgSend)(nsString, sel_registerName("release"));
+      }
+    }
+  }
+
+  static bool loggedMacResult = false;
+  if (!loggedMacResult) {
+    if (played) {
+      qDebug() << "Notification sound played via" << method;
+    } else {
+      qWarning() << "Notification sound playback failed on macOS. wavBytes="
+                 << wav.size() << "path=" << path;
+    }
+    loggedMacResult = true;
+  }
+  return;
+#elif defined(Q_OS_LINUX)
+  if (!wav.isEmpty()) {
+    int channels = 0;
+    unsigned int rate = 0;
+    const char *pcm = nullptr;
+    size_t pcmSize = 0;
+    if (parsePcm16FromWav(wav, channels, rate, pcm, pcmSize) &&
+        playPcmWithAlsa(pcm, pcmSize, channels, rate)) {
+      return;
+    }
+  }
+  // Minimal fallback without external commands or Qt Multimedia.
+  std::fputc('\a', stderr);
+  std::fflush(stderr);
+#else
+  Q_UNUSED(wav);
+  std::fputc('\a', stderr);
+  std::fflush(stderr);
+#endif
 }
 
 #ifdef Q_OS_LINUX
@@ -1002,6 +1351,14 @@ void Backend::setConnectionMode(int mode) {
   emit stateChanged();
 }
 
+void Backend::setMessageAlertsEnabled(bool enabled) {
+  if (messageAlertsEnabled_ == enabled) {
+    return;
+  }
+  messageAlertsEnabled_ = enabled;
+  emit stateChanged();
+}
+
 bool Backend::applyLobbyModePreference(const CSteamID &lobby) {
   if (!roomManager_ || !lobby.IsValid() || !lobby.IsLobby()) {
     return false;
@@ -1464,12 +1821,17 @@ void Backend::handleChatMessage(uint64_t senderId, const QString &message) {
   }
   entry.avatar = avatarForSteamId(senderSteam);
 
+  bool isSelf = false;
   if (steamReady_ && SteamUser()) {
     const CSteamID myId = SteamUser()->GetSteamID();
     entry.isSelf = myId.IsValid() && senderSteam == myId;
+    isSelf = entry.isSelf;
   }
 
   chatModel_.appendMessage(std::move(entry));
+  if (!isSelf && messageAlertsEnabled_) {
+    playNotificationTone();
+  }
 }
 
 void Backend::handlePinnedMessageMetadata(const QString &payload) {

@@ -160,7 +160,15 @@ target_link_libraries(connecttool-qt PRIVATE
     ${STEAMWORKS_LIBRARY})
 
 if(WIN32)
-    target_link_libraries(connecttool-qt PRIVATE iphlpapi ws2_32)
+    target_link_libraries(connecttool-qt PRIVATE iphlpapi ws2_32 winmm)
+elseif(APPLE)
+    target_link_libraries(connecttool-qt PRIVATE "-framework AudioToolbox" "-framework AppKit")
+elseif(UNIX AND NOT APPLE)
+    find_library(ALSA_LIB asound)
+    if(ALSA_LIB)
+        target_link_libraries(connecttool-qt PRIVATE ${ALSA_LIB})
+        target_compile_definitions(connecttool-qt PRIVATE HAVE_ALSA=1)
+    endif()
 endif()
 
 # Ensure the Steam redistributable is next to the executable at build and
@@ -193,7 +201,8 @@ qt_add_qml_module(connecttool-qt
     RESOURCES
         qml/ConnectTool/GitHub.svg
         qml/ConnectTool/QQ.svg
-        qml/ConnectTool/Menu.svg)
+        qml/ConnectTool/Menu.svg
+        qml/ConnectTool/notification.wav)
 
 target_compile_definitions(connecttool-qt PRIVATE CONNECTTOOL_VERSION="${CONNECTTOOL_VERSION}")
 
