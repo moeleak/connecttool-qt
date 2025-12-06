@@ -275,7 +275,7 @@ private:
   bool lobbyRefreshing_ = false;
   std::chrono::steady_clock::time_point lastPingBroadcast_;
   std::chrono::steady_clock::time_point lastRelayPingSample_;
-  ConnectionMode connectionMode_ = ConnectionMode::Tcp;
+  ConnectionMode connectionMode_ = ConnectionMode::Tun;
   bool vpnHosting_ = false;
   bool vpnConnected_ = false;
   bool vpnWanted_ = false;

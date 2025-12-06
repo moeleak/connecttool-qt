@@ -1898,7 +1898,7 @@ ApplicationWindow {
                                     }
                                     ComboBox {
                                         id: downloadSource
-                                        model: [qsTr("GitHub"), qsTr("gh-proxy（国内首选）")]
+                                        model: [qsTr("GitHub"), qsTr("国内中转")]
                                         Layout.preferredWidth: 120
                                         Component.onCompleted: currentIndex = 0
                                     }
