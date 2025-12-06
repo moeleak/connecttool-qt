@@ -101,6 +101,10 @@ public:
       std::function<void(bool wantsTun, const CSteamID &lobby)> callback);
   void setLobbyInviteCallback(
       std::function<void(const CSteamID &lobby)> callback);
+  void setPinnedMessageChangedCallback(
+      std::function<void(const std::string &)> callback);
+  void setPinnedMessageData(const std::string &data);
+  void clearPinnedMessageData();
 
 private:
   friend class SteamMatchmakingCallbacks;
@@ -112,6 +116,8 @@ private:
   void handlePingMessage(const std::string &payload);
   void handleChatMessage(const CSteamID &sender, const std::string &payload);
   bool lobbyWantsTun(CSteamID lobby) const;
+  void notifyPinnedMessageChanged(const CSteamID &lobby);
+  std::string getPinnedMessageData(const CSteamID &lobby) const;
 
   SteamNetworkingManager *networkingManager_;
   SteamVpnNetworkingManager *vpnNetworkingManager_ = nullptr;
@@ -137,4 +143,5 @@ private:
   std::function<void()> hostLeftCallback_;
   std::function<void(const CSteamID &, const std::string &)>
       chatMessageCallback_;
+  std::function<void(const std::string &)> pinnedMessageChangedCallback_;
 };

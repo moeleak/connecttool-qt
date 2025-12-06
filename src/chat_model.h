@@ -3,11 +3,15 @@
 #include <QAbstractListModel>
 #include <QDateTime>
 #include <QString>
+#include <QVariantMap>
+#include <optional>
 #include <vector>
 
 class ChatModel : public QAbstractListModel {
   Q_OBJECT
   Q_PROPERTY(int count READ count NOTIFY countChanged)
+  Q_PROPERTY(bool hasPinned READ hasPinned NOTIFY pinnedChanged)
+  Q_PROPERTY(QVariantMap pinnedMessage READ pinnedMessage NOTIFY pinnedChanged)
 
 public:
   enum Roles {
@@ -16,7 +20,8 @@ public:
     AvatarRole,
     MessageRole,
     IsSelfRole,
-    TimestampRole
+    TimestampRole,
+    IsPinnedRole
   };
 
   struct Entry {
@@ -25,6 +30,7 @@ public:
     QString avatar;
     QString message;
     bool isSelf = false;
+    bool pinned = false;
     QDateTime timestamp;
   };
 
@@ -37,13 +43,23 @@ public:
 
   void appendMessage(Entry entry);
   void clear();
+  void setPinnedMessage(const Entry &entry);
+  void clearPinnedMessage();
 
   int count() const { return static_cast<int>(entries_.size()); }
+  bool hasPinned() const { return pinnedEntry_.has_value(); }
+  QVariantMap pinnedMessage() const;
 
 signals:
   void countChanged();
+  void pinnedChanged();
 
 private:
+  void updatePinnedFlags();
+
+  static bool sameMessage(const Entry &a, const Entry &b);
+
   std::vector<Entry> entries_;
+  std::optional<Entry> pinnedEntry_;
   int maxMessages_ = 200;
 };

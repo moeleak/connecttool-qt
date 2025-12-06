@@ -10,6 +10,9 @@
 #include <QClipboard>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
 #include <QDesktopServices>
 #include <QGuiApplication>
 #include <QDir>
@@ -252,6 +255,14 @@ Backend::Backend(QObject *parent)
         this, [this, senderId, text]() { handleChatMessage(senderId, text); },
         Qt::QueuedConnection);
   });
+  roomManager_->setPinnedMessageChangedCallback(
+      [this](const std::string &payload) {
+        const QString text =
+            QString::fromUtf8(payload.data(), static_cast<int>(payload.size()));
+        QMetaObject::invokeMethod(
+            this, [this, text]() { handlePinnedMessageMetadata(text); },
+            Qt::QueuedConnection);
+      });
   roomManager_->setLobbyListCallback(
       [this](const std::vector<SteamRoomManager::LobbyInfo> &lobbies) {
         QMetaObject::invokeMethod(
@@ -1309,6 +1320,61 @@ void Backend::sendChatMessage(const QString &text) {
   }
 }
 
+void Backend::pinChatMessage(const QString &steamId,
+                             const QString &displayName,
+                             const QString &avatar, const QString &message,
+                             const QDateTime &timestamp) {
+  if (!ensureSteamReady(tr("置顶消息"))) {
+    return;
+  }
+  if (!roomManager_ || roomManager_->getCurrentLobby() == k_steamIDNil) {
+    qWarning() << tr("请先加入房间后再置顶消息。");
+    return;
+  }
+  if (!isHost()) {
+    setStatusOverride(tr("只有房主可以置顶消息。"), 2400);
+    return;
+  }
+
+  ChatModel::Entry entry;
+  entry.steamId = steamId;
+  entry.displayName = displayName.isEmpty() ? steamId : displayName;
+  entry.message = message.trimmed();
+  entry.avatar = avatar;
+  entry.timestamp =
+      timestamp.isValid() ? timestamp : QDateTime::currentDateTime();
+  if (entry.message.isEmpty()) {
+    return;
+  }
+
+  bool isSelfAuthor = false;
+  if (steamReady_ && SteamUser()) {
+    const QString myId =
+        QString::number(SteamUser()->GetSteamID().ConvertToUint64());
+    isSelfAuthor = (steamId == myId);
+  }
+  entry = populatePinnedEntryAvatar(std::move(entry), isSelfAuthor);
+  chatModel_.setPinnedMessage(entry);
+
+  if (roomManager_) {
+    const QString payload = serializePinnedMessage(entry);
+    roomManager_->setPinnedMessageData(payload.toStdString());
+  }
+}
+
+void Backend::clearPinnedChatMessage() {
+  if (!roomManager_ || roomManager_->getCurrentLobby() == k_steamIDNil) {
+    chatModel_.clearPinnedMessage();
+    return;
+  }
+  if (!isHost()) {
+    setStatusOverride(tr("只有房主可以取消置顶。"), 2400);
+    return;
+  }
+  chatModel_.clearPinnedMessage();
+  roomManager_->clearPinnedMessageData();
+}
+
 void Backend::launchSteam(bool useSteamChina) {
 #ifdef Q_OS_WIN
   QString steamPath;
@@ -1390,6 +1456,98 @@ void Backend::handleChatMessage(uint64_t senderId, const QString &message) {
   }
 
   chatModel_.appendMessage(std::move(entry));
+}
+
+void Backend::handlePinnedMessageMetadata(const QString &payload) {
+  if (payload.isEmpty()) {
+    chatModel_.clearPinnedMessage();
+    return;
+  }
+  const auto parsed = parsePinnedMessagePayload(payload);
+  if (!parsed.has_value()) {
+    chatModel_.clearPinnedMessage();
+    return;
+  }
+  bool isSelfAuthor = false;
+  if (steamReady_ && SteamUser()) {
+    const QString myId =
+        QString::number(SteamUser()->GetSteamID().ConvertToUint64());
+    isSelfAuthor = (parsed->steamId == myId);
+  }
+  ChatModel::Entry entry =
+      populatePinnedEntryAvatar(std::move(*parsed), isSelfAuthor);
+  chatModel_.setPinnedMessage(entry);
+}
+
+std::optional<ChatModel::Entry>
+Backend::parsePinnedMessagePayload(const QString &payload) const {
+  QJsonParseError error{};
+  const QJsonDocument doc = QJsonDocument::fromJson(payload.toUtf8(), &error);
+  if (error.error != QJsonParseError::NoError || !doc.isObject()) {
+    return std::nullopt;
+  }
+
+  const QJsonObject obj = doc.object();
+  ChatModel::Entry entry;
+  entry.steamId = obj.value(QStringLiteral("steamId")).toString();
+  entry.displayName = obj.value(QStringLiteral("displayName")).toString();
+  entry.message = obj.value(QStringLiteral("message")).toString().trimmed();
+  const QString ts = obj.value(QStringLiteral("timestamp")).toString();
+  if (!ts.isEmpty()) {
+    entry.timestamp = QDateTime::fromString(ts, Qt::ISODateWithMs);
+    if (!entry.timestamp.isValid()) {
+      entry.timestamp = QDateTime::fromString(ts, Qt::ISODate);
+    }
+    if (entry.timestamp.isValid()) {
+      entry.timestamp = entry.timestamp.toLocalTime();
+    }
+  }
+  if (!entry.timestamp.isValid()) {
+    entry.timestamp = QDateTime::currentDateTime();
+  }
+  if (entry.displayName.isEmpty() && !entry.steamId.isEmpty()) {
+    entry.displayName = entry.steamId;
+  }
+  if (entry.message.isEmpty()) {
+    return std::nullopt;
+  }
+  return entry;
+}
+
+QString Backend::serializePinnedMessage(const ChatModel::Entry &entry) const {
+  QJsonObject obj;
+  obj.insert(QStringLiteral("steamId"), entry.steamId);
+  obj.insert(QStringLiteral("displayName"), entry.displayName);
+  obj.insert(QStringLiteral("message"), entry.message);
+  const QDateTime ts = entry.timestamp.isValid()
+                           ? entry.timestamp.toUTC()
+                           : QDateTime::currentDateTimeUtc();
+  obj.insert(QStringLiteral("timestamp"),
+             ts.toString(Qt::ISODateWithMs));
+  const QJsonDocument doc(obj);
+  return QString::fromUtf8(doc.toJson(QJsonDocument::Compact));
+}
+
+ChatModel::Entry
+Backend::populatePinnedEntryAvatar(ChatModel::Entry entry, bool isSelfAuthor) {
+  entry.isSelf = isSelfAuthor;
+  bool ok = false;
+  const uint64_t id = entry.steamId.toULongLong(&ok);
+  if (ok) {
+    const CSteamID steamId(static_cast<uint64>(id));
+    if (steamId.IsValid()) {
+      if (entry.displayName.isEmpty() && SteamFriends()) {
+        const char *name = SteamFriends()->GetFriendPersonaName(steamId);
+        if (name && name[0] != '\0') {
+          entry.displayName = QString::fromUtf8(name);
+        }
+      }
+      if (entry.avatar.isEmpty()) {
+        entry.avatar = avatarForSteamId(steamId);
+      }
+    }
+  }
+  return entry;
 }
 
 void Backend::tick() {

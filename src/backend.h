@@ -7,6 +7,7 @@
 #include <boost/asio.hpp>
 #include <chrono>
 #include <memory>
+#include <optional>
 #include <thread>
 #include <unordered_map>
 
@@ -125,6 +126,12 @@ public:
   Q_INVOKABLE void addFriend(const QString &steamId);
   Q_INVOKABLE void copyToClipboard(const QString &text);
   Q_INVOKABLE void sendChatMessage(const QString &text);
+  Q_INVOKABLE void pinChatMessage(const QString &steamId,
+                                  const QString &displayName,
+                                  const QString &avatar,
+                                  const QString &message,
+                                  const QDateTime &timestamp);
+  Q_INVOKABLE void clearPinnedChatMessage();
   Q_INVOKABLE void launchSteam(bool useSteamChina);
 
 signals:
@@ -164,6 +171,12 @@ private:
   void updateLobbyInfoSignals();
   void setFriendsRefreshing(bool refreshing);
   void updateRelayPing();
+  void handlePinnedMessageMetadata(const QString &payload);
+  std::optional<ChatModel::Entry>
+  parsePinnedMessagePayload(const QString &payload) const;
+  QString serializePinnedMessage(const ChatModel::Entry &entry) const;
+  ChatModel::Entry populatePinnedEntryAvatar(ChatModel::Entry entry,
+                                             bool isSelfAuthor);
   void setLobbyRefreshing(bool refreshing);
   void setStatusOverride(const QString &text, int durationMs = 3000);
   void clearStatusOverride();

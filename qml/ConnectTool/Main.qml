@@ -90,6 +90,7 @@ ApplicationWindow {
         title: qsTr("需要管理员权限")
         modal: true
         standardButtons: Dialog.Ok
+        implicitWidth: 360
         x: (win.width - width) / 2
         y: (win.height - height) / 2
         contentItem: Column {
@@ -532,116 +533,310 @@ ApplicationWindow {
                                     Layout.fillHeight: true
                                     Layout.preferredHeight: 280
 
-                                    ListView {
-                                        id: chatList
+                                    id: chatColumn
+                                    property var pinnedMessageData: ({})
+                                    function refreshPinned() {
+                                        const raw = backend.chatModel ? backend.chatModel.pinnedMessage : ({});
+                                        pinnedMessageData = {
+                                            avatar: raw.avatar || "",
+                                            displayName: raw.displayName || "",
+                                            message: raw.message || "",
+                                            timestamp: raw.timestamp || null
+                                        };
+                                    }
+                                    Component.onCompleted: refreshPinned()
+                                    Connections {
+                                        target: backend.chatModel
+                                        function onPinnedChanged() {
+                                            chatColumn.refreshPinned()
+                                        }
+                                    }
+
+                                    ColumnLayout {
                                         anchors.fill: parent
-                                        anchors.margins: 6
-                                        model: backend.chatModel
-                                        spacing: 12
-                                        clip: true
-                                        ScrollBar.vertical: ScrollBar {}
-                                        onCountChanged: chatFrame.scrollToBottom()
-                                        onModelChanged: chatFrame.scrollToBottom()
-                                        onContentHeightChanged: chatFrame.scrollToBottom()
-                                        Component.onCompleted: chatFrame.scrollToBottom()
+                                        spacing: 8
 
-                                        delegate: Item {
-                                            required property string displayName
-                                            required property string avatar
-                                            required property string message
-                                            required property bool isSelf
-                                            required property string steamId
-                                            required property var timestamp
-                                            width: chatList.width
-                                            implicitHeight: bubbleRow.implicitHeight + 8
+                                        Rectangle {
+                                            id: pinnedMessageBox
+                                            Layout.fillWidth: true
+                                            visible: backend.chatModel && backend.chatModel.hasPinned
+                                            radius: 12
+                                            color: "#2b2410"
+                                            border.color: "#eab308"
+                                            implicitHeight: pinnedContent.implicitHeight + 16
 
-                                            Row {
-                                                id: bubbleRow
-                                                anchors.left: isSelf ? undefined : parent.left
-                                                anchors.right: isSelf ? parent.right : undefined
-                                                anchors.margins: 6
+                                            RowLayout {
+                                                id: pinnedContent
+                                                anchors.fill: parent
+                                                anchors.margins: 10
                                                 spacing: 10
-                                                width: parent.width
-                                                layoutDirection: isSelf ? Qt.RightToLeft : Qt.LeftToRight
 
                                                 Item {
-                                                    width: 40
-                                                    height: 40
+                                                    width: 36
+                                                    height: 36
                                                     Rectangle {
-                                                        id: chatAvatarFrame
+                                                        id: pinnedAvatarFrame
                                                         anchors.fill: parent
                                                         radius: width / 2
-                                                        color: avatar.length > 0 ? "transparent" : "#1a2436"
-                                                        border.color: avatar.length > 0 ? "transparent" : "#1f2f45"
-                                                        layer.enabled: avatar.length > 0
+                                                        color: !!chatColumn.pinnedMessageData.avatar && chatColumn.pinnedMessageData.avatar.length > 0 ? "transparent" : "#1f2b3c"
+                                                        border.color: "#facc15"
+                                                        layer.enabled: !!chatColumn.pinnedMessageData.avatar && chatColumn.pinnedMessageData.avatar.length > 0
                                                         layer.effect: OpacityMask {
-                                                            source: chatAvatarFrame
+                                                            source: pinnedAvatarFrame
                                                             maskSource: Rectangle {
-                                                                width: chatAvatarFrame.width
-                                                                height: chatAvatarFrame.height
-                                                                radius: chatAvatarFrame.width / 2
+                                                                width: pinnedAvatarFrame.width
+                                                                height: pinnedAvatarFrame.height
+                                                                radius: width / 2
                                                                 color: "white"
                                                             }
                                                         }
                                                         Image {
                                                             anchors.fill: parent
-                                                            source: avatar
-                                                            visible: avatar.length > 0
+                                                            source: String(chatColumn.pinnedMessageData.avatar || "")
+                                                            visible: !!chatColumn.pinnedMessageData.avatar && chatColumn.pinnedMessageData.avatar.length > 0
                                                             fillMode: Image.PreserveAspectCrop
                                                             smooth: true
                                                         }
                                                         Label {
                                                             anchors.centerIn: parent
-                                                            visible: avatar.length === 0
-                                                            text: displayName.length > 0 ? displayName[0] : "?"
-                                                            color: "#6f7e9c"
-                                                            font.pixelSize: 16
+                                                            visible: !(!!chatColumn.pinnedMessageData.avatar && chatColumn.pinnedMessageData.avatar.length > 0)
+                                                            text: chatColumn.pinnedMessageData.displayName && chatColumn.pinnedMessageData.displayName.length > 0 ? chatColumn.pinnedMessageData.displayName[0] : "?"
+                                                            color: "#facc15"
+                                                            font.pixelSize: 14
                                                         }
                                                     }
                                                 }
 
-                                                Rectangle {
-                                                    id: bubble
-                                                    radius: 12
-                                                    color: isSelf ? "#14342e" : "#151e2f"
-                                                    border.color: isSelf ? "#23c9a9" : "#1f2f45"
-                                                    width: Math.min(chatList.width * 0.72, Math.max(messageText.implicitWidth, headerRow.implicitWidth) + 28)
-                                                    implicitHeight: bubbleContent.implicitHeight + 16
+                                                ColumnLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: 4
 
-                                                    ColumnLayout {
-                                                        id: bubbleContent
-                                                        anchors.fill: parent
-                                                        anchors.margins: 10
-                                                        spacing: 6
-
-                                                        RowLayout {
-                                                            id: headerRow
+                                                    RowLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 8
+                                                        Label {
+                                                            text: chatColumn.pinnedMessageData.displayName || qsTr("未知用户")
+                                                            color: "#fef9c3"
+                                                            font.pixelSize: 12
+                                                            elide: Text.ElideRight
                                                             Layout.fillWidth: true
-                                                            spacing: 6
+                                                        }
+                                                        Rectangle {
+                                                            radius: 6
+                                                            color: "#eab308"
+                                                            Layout.preferredWidth: 44
+                                                            Layout.preferredHeight: 20
                                                             Label {
-                                                                text: displayName
-                                                                color: isSelf ? "#8de3cf" : "#c7d9ff"
-                                                                font.pixelSize: 12
-                                                                elide: Text.ElideRight
-                                                                Layout.fillWidth: true
-                                                            }
-                                                            Label {
-                                                                color: "#7f8cab"
+                                                                anchors.centerIn: parent
+                                                                text: qsTr("置顶")
+                                                                color: "#1e1b4b"
                                                                 font.pixelSize: 11
-                                                                text: timestamp ? Qt.formatTime(timestamp, "HH:mm") : ""
-                                                                visible: text.length > 0
-                                                                Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
                                                             }
                                                         }
-                                                        Text {
-                                                            id: messageText
-                                                            Layout.fillWidth: true
-                                                            text: message
-                                                            color: "#e6efff"
-                                                            font.pixelSize: 14
-                                                            wrapMode: Text.Wrap
-                                                            textFormat: Text.PlainText
-                                                            width: bubble.width - 20
+                                                        Label {
+                                                            color: "#facc15"
+                                                            font.pixelSize: 11
+                                                            text: chatColumn.pinnedMessageData.timestamp ? Qt.formatTime(chatColumn.pinnedMessageData.timestamp, "HH:mm") : ""
+                                                            visible: text.length > 0
+                                                            Layout.alignment: Qt.AlignVCenter | Qt.AlignRight
+                                                        }
+                                                    }
+                                                    Text {
+                                                        Layout.fillWidth: true
+                                                        text: chatColumn.pinnedMessageData.message || ""
+                                                        color: "#fef3c7"
+                                                        font.pixelSize: 14
+                                                        wrapMode: Text.Wrap
+                                                        textFormat: Text.PlainText
+                                                    }
+                                                }
+                                            }
+
+                                            Menu {
+                                                id: pinnedMenu
+                                                parent: chatFrame
+                                                MenuItem {
+                                                    text: qsTr("取消置顶")
+                                                    enabled: backend.isHost
+                                                    onTriggered: chatFrame.clearPinned()
+                                                }
+                                            }
+
+                                            MouseArea {
+                                                anchors.fill: parent
+                                                acceptedButtons: Qt.RightButton
+                                                enabled: backend.isHost
+                                                hoverEnabled: true
+                                                onPressed: function(mouse) {
+                                                    if (mouse.button !== Qt.RightButton) {
+                                                        return;
+                                                    }
+                                                    const pos = chatFrame.mapFromItem(pinnedMessageBox, mouse.x, mouse.y);
+                                                    pinnedMenu.x = pos.x;
+                                                    pinnedMenu.y = pos.y;
+                                                    pinnedMenu.open();
+                                                }
+                                            }
+                                        }
+
+                                        ListView {
+                                            id: chatList
+                                            Layout.fillWidth: true
+                                            Layout.fillHeight: true
+                                            Layout.margins: 6
+                                            model: backend.chatModel
+                                            spacing: 12
+                                            clip: true
+                                            ScrollBar.vertical: ScrollBar {}
+                                            onCountChanged: chatFrame.scrollToBottom()
+                                            onModelChanged: chatFrame.scrollToBottom()
+                                            Component.onCompleted: chatFrame.scrollToBottom()
+
+                                            delegate: Item {
+                                                required property string displayName
+                                                required property string avatar
+                                                required property string message
+                                                required property bool isSelf
+                                                required property bool isPinned
+                                                required property string steamId
+                                                required property var timestamp
+                                                width: chatList.width
+                                                implicitHeight: bubbleRow.implicitHeight + 8
+
+                                                Row {
+                                                    id: bubbleRow
+                                                    anchors.left: isSelf ? undefined : parent.left
+                                                    anchors.right: isSelf ? parent.right : undefined
+                                                    anchors.margins: 6
+                                                    spacing: 10
+                                                    width: parent.width
+                                                    layoutDirection: isSelf ? Qt.RightToLeft : Qt.LeftToRight
+
+                                                    Item {
+                                                        width: 40
+                                                        height: 40
+                                                        Rectangle {
+                                                            id: chatAvatarFrame
+                                                            anchors.fill: parent
+                                                            radius: width / 2
+                                                            color: avatar.length > 0 ? "transparent" : "#1a2436"
+                                                            border.color: isPinned ? "#eab308" : (avatar.length > 0 ? "transparent" : "#1f2f45")
+                                                            layer.enabled: avatar.length > 0
+                                                            layer.effect: OpacityMask {
+                                                                source: chatAvatarFrame
+                                                                maskSource: Rectangle {
+                                                                    width: chatAvatarFrame.width
+                                                                    height: chatAvatarFrame.height
+                                                                    radius: chatAvatarFrame.width / 2
+                                                                    color: "white"
+                                                                }
+                                                            }
+                                                            Image {
+                                                                anchors.fill: parent
+                                                                source: avatar
+                                                                visible: avatar.length > 0
+                                                                fillMode: Image.PreserveAspectCrop
+                                                                smooth: true
+                                                            }
+                                                            Label {
+                                                                anchors.centerIn: parent
+                                                                visible: avatar.length === 0
+                                                                text: displayName.length > 0 ? displayName[0] : "?"
+                                                                color: isPinned ? "#facc15" : "#6f7e9c"
+                                                                font.pixelSize: 16
+                                                            }
+                                                        }
+                                                    }
+
+                                                    Rectangle {
+                                                        id: bubble
+                                                        radius: 12
+                                                        color: isPinned ? "#2b2410" : (isSelf ? "#14342e" : "#151e2f")
+                                                        border.color: isPinned ? "#eab308" : (isSelf ? "#23c9a9" : "#1f2f45")
+                                                        width: Math.min(chatList.width * 0.72, Math.max(messageText.implicitWidth, headerRow.implicitWidth) + 28)
+                                                        implicitHeight: bubbleContent.implicitHeight + 16
+
+                                                        ColumnLayout {
+                                                            id: bubbleContent
+                                                            anchors.fill: parent
+                                                            anchors.margins: 10
+                                                            spacing: 6
+
+                                                            RowLayout {
+                                                                id: headerRow
+                                                                Layout.fillWidth: true
+                                                                spacing: 6
+                                                                Label {
+                                                                    text: displayName
+                                                                    color: isPinned ? "#fef9c3" : (isSelf ? "#8de3cf" : "#c7d9ff")
+                                                                    font.pixelSize: 12
+                                                                    elide: Text.ElideRight
+                                                                    Layout.fillWidth: true
+                                                                }
+                                                                Label {
+                                                                    visible: isPinned
+                                                                    text: qsTr("置顶")
+                                                                    color: "#facc15"
+                                                                    font.pixelSize: 11
+                                                                    padding: 4
+                                                                    background: Rectangle { radius: 6; color: "#422006" }
+                                                                }
+                                                                Label {
+                                                                    color: isPinned ? "#facc15" : "#7f8cab"
+                                                                    font.pixelSize: 11
+                                                                    text: timestamp ? Qt.formatTime(timestamp, "HH:mm") : ""
+                                                                    visible: text.length > 0
+                                                                    Layout.alignment: Qt.AlignRight | Qt.AlignVCenter
+                                                                }
+                                                            }
+                                                            Text {
+                                                                id: messageText
+                                                                Layout.fillWidth: true
+                                                                text: message
+                                                                color: isPinned ? "#fef3c7" : "#e6efff"
+                                                                font.pixelSize: 14
+                                                                wrapMode: Text.Wrap
+                                                                textFormat: Text.PlainText
+                                                                width: bubble.width - 20
+                                                            }
+                                                        }
+
+                                                        MouseArea {
+                                                            anchors.fill: parent
+                                                            acceptedButtons: Qt.RightButton
+                                                            propagateComposedEvents: true
+                                                            enabled: backend.isHost
+                                                            onPressed: function(mouse) {
+                                                                if (mouse.button !== Qt.RightButton) {
+                                                                    return;
+                                                                }
+                                                                const pos = chatFrame.mapFromItem(bubble, mouse.x, mouse.y);
+                                                                pinMenu.x = pos.x;
+                                                                pinMenu.y = pos.y;
+                                                                pinMenu.open();
+                                                            }
+                                                        }
+                                                    }
+                                                }
+
+                                                Menu {
+                                                    id: pinMenu
+                                                    parent: chatFrame
+                                                    MenuItem {
+                                                        text: isPinned ? qsTr("取消置顶") : qsTr("置顶")
+                                                        enabled: backend.isHost
+                                                        onTriggered: {
+                                                            if (isPinned) {
+                                                                chatFrame.clearPinned()
+                                                            } else {
+                                                                chatFrame.pinMessage({
+                                                                    steamId: steamId,
+                                                                    displayName: displayName,
+                                                                    avatar: avatar,
+                                                                    message: message,
+                                                                    timestamp: timestamp
+                                                                })
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -652,7 +847,7 @@ ApplicationWindow {
                                     Column {
                                         anchors.centerIn: parent
                                         spacing: 6
-                                        visible: chatList.count === 0
+                                        visible: chatList.count === 0 && !(backend.chatModel && backend.chatModel.hasPinned)
                                         Label { text: qsTr("暂无消息"); color: "#8090b3" }
                                         Label { text: qsTr("加入房间后即可在此聊天。"); color: "#62708f"; font.pixelSize: 12 }
                                     }
@@ -691,6 +886,21 @@ ApplicationWindow {
                             function scrollToBottom() {
                                 Qt.callLater(function() { chatList.positionViewAtEnd(); });
                             }
+
+                            function pinMessage(entry) {
+                                if (!entry || !entry.message) {
+                                    return;
+                                }
+                                backend.pinChatMessage(entry.steamId || "",
+                                                       entry.displayName || "",
+                                                       entry.avatar || "",
+                                                       entry.message,
+                                                       entry.timestamp);
+                            }
+
+                            function clearPinned() {
+                                backend.clearPinnedChatMessage();
+                            }
                         }
                     }
 
@@ -710,44 +920,38 @@ ApplicationWindow {
                             TabBar {
                                 id: sidebarTabBar
                                 Layout.fillWidth: true
+                                Layout.preferredHeight: 40
                                 spacing: 8
-                                background: Rectangle {
-                                    radius: 10
-                                    color: "#0f1725"
-                                    border.color: "#1f2b3c"
-                                }
+                                background: Rectangle { color: "transparent" }
                                 TabButton {
-                                    id: membersTab
                                     text: qsTr("房间成员")
+                                    width: implicitWidth
+                                    // 自定义简单的样式以匹配深色主题
                                     contentItem: Label {
-                                        text: membersTab.text
-                                        color: membersTab.checked ? "#7fded1" : "#9bb0d0"
+                                        text: parent.text
+                                        font.pixelSize: 15
+                                        color: parent.checked ? "#23c9a9" : "#7f8cab"
                                         horizontalAlignment: Text.AlignHCenter
                                         verticalAlignment: Text.AlignVCenter
-                                        font.pixelSize: 14
                                     }
                                     background: Rectangle {
-                                        radius: 8
-                                        color: membersTab.checked ? "#162033" : "#111827"
-                                        border.color: membersTab.checked ? "#23c9a9" : "#1f2b3c"
-                                        implicitHeight: 40
+                                        color: parent.checked ? "#162033" : "transparent"
+                                        radius: 6
                                     }
                                 }
                                 TabButton {
-                                    id: steamFriendsTab
-                                    text: qsTr("Steam好友")
+                                    text: qsTr("Steam 好友")
+                                    width: implicitWidth
                                     contentItem: Label {
-                                        text: steamFriendsTab.text
-                                        color: steamFriendsTab.checked ? "#7fded1" : "#9bb0d0"
+                                        text: parent.text
+                                        font.pixelSize: 15
+                                        color: parent.checked ? "#23c9a9" : "#7f8cab"
                                         horizontalAlignment: Text.AlignHCenter
                                         verticalAlignment: Text.AlignVCenter
-                                        font.pixelSize: 14
                                     }
                                     background: Rectangle {
-                                        radius: 8
-                                        color: steamFriendsTab.checked ? "#162033" : "#111827"
-                                        border.color: steamFriendsTab.checked ? "#23c9a9" : "#1f2b3c"
-                                        implicitHeight: 40
+                                        color: parent.checked ? "#162033" : "transparent"
+                                        radius: 6
                                     }
                                 }
                             }

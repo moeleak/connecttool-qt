@@ -13,6 +13,7 @@ constexpr const char *kLobbyKeyHostName = "ct_host_name";
 constexpr const char *kLobbyKeyHostId = "ct_host_id";
 constexpr const char *kLobbyKeyPingLocation = "ct_ping_loc";
 constexpr const char *kLobbyKeyTag = "ct_tag";
+constexpr const char *kLobbyKeyPinned = "ct_pin";
 constexpr const char *kLobbyTagValue = "1";
 constexpr const char *kPingPrefix = "PING|";
 constexpr const char *kLobbyModeTun = "tun";
@@ -244,6 +245,8 @@ void SteamMatchmakingCallbacks::OnLobbyDataUpdate(
       roomManager_->lobbyModeChangedCallback_(wantsTun, lobby);
     }
   }
+
+  roomManager_->notifyPinnedMessageChanged(lobby);
 }
 
 void SteamMatchmakingCallbacks::OnLobbyEntered(LobbyEnter_t *pCallback) {
@@ -270,6 +273,9 @@ void SteamMatchmakingCallbacks::OnLobbyEntered(LobbyEnter_t *pCallback) {
     SteamFriends()->SetRichPresence("steam_display", "#Status_InLobby");
     SteamFriends()->SetRichPresence(
         "connect", std::to_string(pCallback->m_ulSteamIDLobby).c_str());
+
+    roomManager_->notifyPinnedMessageChanged(
+        roomManager_->getCurrentLobby());
 
     if (roomManager_->vpnMode_) {
       const CSteamID hostID =
@@ -396,6 +402,26 @@ void SteamRoomManager::setLobbyModeChangedCallback(
 void SteamRoomManager::setLobbyInviteCallback(
     std::function<void(const CSteamID &lobby)> callback) {
   lobbyInviteCallback_ = std::move(callback);
+}
+
+void SteamRoomManager::setPinnedMessageChangedCallback(
+    std::function<void(const std::string &)> callback) {
+  pinnedMessageChangedCallback_ = std::move(callback);
+}
+
+void SteamRoomManager::setPinnedMessageData(const std::string &data) {
+  if (currentLobby == k_steamIDNil || !SteamMatchmaking()) {
+    return;
+  }
+  SteamMatchmaking()->SetLobbyData(currentLobby, kLobbyKeyPinned,
+                                   data.c_str());
+}
+
+void SteamRoomManager::clearPinnedMessageData() {
+  if (currentLobby == k_steamIDNil || !SteamMatchmaking()) {
+    return;
+  }
+  SteamMatchmaking()->DeleteLobbyData(currentLobby, kLobbyKeyPinned);
 }
 
 SteamRoomManager::~SteamRoomManager() {
@@ -755,4 +781,23 @@ bool SteamRoomManager::lobbyWantsTun(CSteamID lobby) const {
   }
   const char *mode = SteamMatchmaking()->GetLobbyData(lobby, kLobbyKeyMode);
   return mode && strcmp(mode, kLobbyModeTun) == 0;
+}
+
+void SteamRoomManager::notifyPinnedMessageChanged(const CSteamID &lobby) {
+  if (!pinnedMessageChangedCallback_) {
+    return;
+  }
+  pinnedMessageChangedCallback_(getPinnedMessageData(lobby));
+}
+
+std::string
+SteamRoomManager::getPinnedMessageData(const CSteamID &lobby) const {
+  if (!SteamMatchmaking() || !lobby.IsValid()) {
+    return {};
+  }
+  const char *data = SteamMatchmaking()->GetLobbyData(lobby, kLobbyKeyPinned);
+  if (data && data[0] != '\0') {
+    return data;
+  }
+  return {};
 }
