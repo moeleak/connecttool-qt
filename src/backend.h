@@ -160,7 +160,7 @@ public:
                                   const QDateTime &timestamp);
   Q_INVOKABLE void clearPinnedChatMessage();
   Q_INVOKABLE void launchSteam(bool useSteamChina);
-  Q_INVOKABLE void checkForUpdates();
+  Q_INVOKABLE void checkForUpdates(bool useProxy = false);
   Q_INVOKABLE void downloadUpdate(bool useProxy, const QString &targetPath);
 
 signals:

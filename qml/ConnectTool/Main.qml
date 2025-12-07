@@ -1059,7 +1059,7 @@ ApplicationWindow {
                                                                     if (mouse.button === Qt.RightButton) {
                                                                         const hasMenu =
                                                                             addFriendItem.visible ||
-                                                                            copyIpItem.visible
+                                                                            (backend.connectionMode === 1 && ip && ip.length > 0)
 
                                                                         if (hasMenu)
                                                                             memberMenu.popup()
@@ -1929,7 +1929,7 @@ ApplicationWindow {
                                         id: checkUpdateBtnInline
                                         text: backend.checkingUpdate ? qsTr("检查中…") : qsTr("检查更新")
                                         enabled: !backend.checkingUpdate
-                                        onClicked: backend.checkForUpdates()
+                                        onClicked: backend.checkForUpdates(downloadSource.currentIndex === 1)
                                     }
                                     Button {
                                         text: backend.downloadingUpdate ? qsTr("下载中…") : qsTr("下载更新")

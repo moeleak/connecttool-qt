@@ -7,7 +7,7 @@ find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Network)
 find_package(Git QUIET)
 
 # Read version from git tag if available
-set(CONNECTTOOL_VERSION "1.5.3")
+set(CONNECTTOOL_VERSION "1.5.4")
 if(DEFINED ENV{CONNECTTOOL_VERSION})
     set(CONNECTTOOL_VERSION "$ENV{CONNECTTOOL_VERSION}")
 endif()

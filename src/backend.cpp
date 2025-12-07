@@ -193,6 +193,14 @@ void fixSteamEnvForSudo() {
   }
 }
 #endif
+
+QString stripGhProxyPrefix(const QString &url) {
+  const QString prefix = QStringLiteral("https://gh-proxy.org/");
+  if (url.startsWith(prefix)) {
+    return url.mid(prefix.size());
+  }
+  return url;
+}
 } // namespace
 
 Backend::Backend(QObject *parent)
@@ -2039,7 +2047,7 @@ void Backend::updateLobbyInfoSignals() {
   }
 }
 
-void Backend::checkForUpdates() {
+void Backend::checkForUpdates(bool useProxy) {
   if (checkingUpdate_) {
     return;
   }
@@ -2048,8 +2056,13 @@ void Backend::checkForUpdates() {
   checkingUpdate_ = true;
   emit updateInfoChanged();
 
-  QNetworkRequest req(QUrl(QStringLiteral(
-      "https://api.github.com/repos/moeleak/connecttool-qt/releases/latest")));
+  const QString apiUrl = QStringLiteral(
+      "https://api.github.com/repos/moeleak/connecttool-qt/releases/latest");
+  const QString reqUrl =
+      useProxy ? QStringLiteral("https://gh-proxy.org/") + apiUrl : apiUrl;
+
+  const QUrl url(reqUrl);
+  QNetworkRequest req{url};
   req.setHeader(QNetworkRequest::UserAgentHeader,
                 QStringLiteral("connecttool-qt"));
   currentUpdateReply_ = networkManager_.get(req);
@@ -2191,7 +2204,8 @@ void Backend::handleUpdateReply() {
 
   const QJsonObject obj = doc.object();
   const QString tag = obj.value(QStringLiteral("tag_name")).toString();
-  latestReleasePage_ = obj.value(QStringLiteral("html_url")).toString();
+  latestReleasePage_ =
+      stripGhProxyPrefix(obj.value(QStringLiteral("html_url")).toString());
   const QJsonArray assets = obj.value(QStringLiteral("assets")).toArray();
   QString assetUrl;
   for (const auto &assetVal : assets) {
@@ -2199,8 +2213,8 @@ void Backend::handleUpdateReply() {
       continue;
     }
     const QJsonObject assetObj = assetVal.toObject();
-    const QString browserUrl =
-        assetObj.value(QStringLiteral("browser_download_url")).toString();
+    const QString browserUrl = stripGhProxyPrefix(
+        assetObj.value(QStringLiteral("browser_download_url")).toString());
     if (!browserUrl.isEmpty()) {
       assetUrl = browserUrl;
       break;
@@ -2366,8 +2380,9 @@ QString Backend::preferredDownloadUrl(bool useProxy) const {
   if (latestDownloadUrl_.isEmpty()) {
     return {};
   }
+  const QString baseUrl = stripGhProxyPrefix(latestDownloadUrl_);
   if (!useProxy) {
-    return latestDownloadUrl_;
+    return baseUrl;
   }
-  return QStringLiteral("https://gh-proxy.org/%1").arg(latestDownloadUrl_);
+  return QStringLiteral("https://gh-proxy.org/%1").arg(baseUrl);
 }
