@@ -208,6 +208,7 @@ private:
   void refreshHostId();
   void updateFriendCooldown(const QString &steamId, int seconds);
   void updateLobbyInfoSignals();
+  void requestUserAttention();
   void setFriendsRefreshing(bool refreshing);
   void updateRelayPing();
   void handlePinnedMessageMetadata(const QString &payload);
@@ -270,6 +271,7 @@ private:
   MembersModel membersModel_;
   ChatModel chatModel_;
   SoundNotifier soundNotifier_;
+  QPointer<QWindow> mainWindow_;
   QString friendFilter_;
   std::unordered_map<uint64_t, QString> memberAvatars_;
   std::unordered_map<uint64_t, int> inviteCooldowns_;

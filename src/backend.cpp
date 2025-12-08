@@ -27,6 +27,7 @@
 #include <QSettings>
 #include <QStandardPaths>
 #include <QUrl>
+#include <QWindow>
 #include <QVariantMap>
 #include <QtDebug>
 #include <algorithm>
@@ -387,6 +388,7 @@ Backend::~Backend() {
 }
 
 void Backend::initializeSound(QWindow *window) {
+  mainWindow_ = window;
   soundNotifier_.initialize(window);
 }
 
@@ -976,6 +978,18 @@ void Backend::setChatReminderEnabled(bool enabled) {
   emit chatReminderEnabledChanged();
 }
 
+void Backend::requestUserAttention() {
+  if (!mainWindow_) {
+    return;
+  }
+  // Only nudge the user when the window is not already active.
+  if (QGuiApplication::applicationState() == Qt::ApplicationActive &&
+      mainWindow_->isActive()) {
+    return;
+  }
+  mainWindow_->alert(0);
+}
+
 void Backend::setLobbyFilter(const QString &text) {
   if (lobbyFilter_ == text) {
     return;
@@ -1491,6 +1505,7 @@ void Backend::handleChatMessage(uint64_t senderId, const QString &message) {
 
   if (!entry.isSelf && chatReminderEnabled_) {
     soundNotifier_.playMessageAlert();
+    requestUserAttention();
   }
 
   chatModel_.appendMessage(std::move(entry));
