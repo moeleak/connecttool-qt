@@ -1,6 +1,7 @@
 #include "steam_networking_manager.h"
 #include "steam_room_manager.h"
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <iostream>
 #include <limits>
@@ -206,6 +207,8 @@ bool SteamNetworkingManager::joinHost(uint64 hostID) {
   g_hostSteamID = hostSteamID;
   relayFallbackPending_ = false;
   relayFallbackTried_ = false;
+  consecutiveBadIceSamples_ = 0;
+  lastIceTimeout_ = {};
 
   return connectToHostInternal(hostSteamID, false);
 }
@@ -238,6 +241,9 @@ void SteamNetworkingManager::disconnect() {
   hostPing_ = 0;
   relayFallbackPending_ = false;
   relayFallbackTried_ = false;
+  consecutiveBadIceSamples_ = 0;
+  lastRelayFallback_ = {};
+  lastIceTimeout_ = {};
 
   std::cout << "Disconnected from network" << std::endl;
 }
@@ -304,6 +310,7 @@ void SteamNetworkingManager::stopMessageHandler() {
 void SteamNetworkingManager::update() {
   bool shouldRetryRelay = false;
   CSteamID retryTarget;
+  HSteamNetConnection connectionToClose = k_HSteamNetConnection_Invalid;
 
   {
     std::lock_guard<std::mutex> lock(connectionsMutex);
@@ -313,6 +320,56 @@ void SteamNetworkingManager::update() {
       if (m_pInterface->GetConnectionRealTimeStatus(g_hConnection, &status,
                                                     0, nullptr)) {
         hostPing_ = status.m_nPing;
+        if (g_isClient &&
+            status.m_eState == k_ESteamNetworkingConnectionState_Connected) {
+          const bool badQuality = status.m_nPing <= 0 ||
+                                  status.m_flConnectionQualityLocal < 0.2f ||
+                                  status.m_flConnectionQualityRemote < 0.2f;
+          consecutiveBadIceSamples_ = badQuality ? (consecutiveBadIceSamples_ + 1)
+                                                 : 0;
+          const auto now = std::chrono::steady_clock::now();
+          if (badQuality && consecutiveBadIceSamples_ >= 120 &&
+              !relayFallbackTried_ && g_hostSteamID.IsValid() &&
+              (lastRelayFallback_.time_since_epoch().count() == 0 ||
+               now - lastRelayFallback_ > std::chrono::seconds(5))) {
+            // ICE appears stuck; drop and retry via relay.
+            std::cout << "[SteamNet] ICE quality poor, retrying via relay-only"
+                      << std::endl;
+            connectionToClose = g_hConnection;
+            g_hConnection = k_HSteamNetConnection_Invalid;
+            g_isConnected = false;
+            relayFallbackPending_ = false;
+            relayFallbackTried_ = true;
+            shouldRetryRelay = true;
+            retryTarget = g_hostSteamID;
+            consecutiveBadIceSamples_ = 0;
+            lastRelayFallback_ = now;
+          }
+
+          // If ICE stays in "connected" but quality is poor for a long time, bail.
+          if (!relayFallbackTried_ && g_hostSteamID.IsValid()) {
+            if (badQuality && now - lastRelayFallback_ > std::chrono::seconds(5)) {
+              if (lastIceTimeout_.time_since_epoch().count() == 0) {
+                lastIceTimeout_ = now;
+              } else if (now - lastIceTimeout_ > std::chrono::seconds(5)) {
+                std::cout << "[SteamNet] ICE timeouts observed, retrying via relay-only"
+                          << std::endl;
+                connectionToClose = g_hConnection;
+                g_hConnection = k_HSteamNetConnection_Invalid;
+                g_isConnected = false;
+                relayFallbackPending_ = false;
+                relayFallbackTried_ = true;
+                shouldRetryRelay = true;
+                retryTarget = g_hostSteamID;
+                consecutiveBadIceSamples_ = 0;
+                lastRelayFallback_ = now;
+                lastIceTimeout_ = {};
+              }
+            } else {
+              lastIceTimeout_ = {};
+            }
+          }
+        }
       }
     }
 
@@ -331,6 +388,11 @@ void SteamNetworkingManager::update() {
       relayFallbackPending_ = false;
       relayFallbackTried_ = true;
     }
+  }
+
+  if (connectionToClose != k_HSteamNetConnection_Invalid) {
+    m_pInterface->CloseConnection(
+        connectionToClose, 0, "Retry via relay after ICE stall", false);
   }
 
   if (shouldRetryRelay) {

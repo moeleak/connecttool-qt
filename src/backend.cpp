@@ -129,7 +129,29 @@ void steamWarningHook(int /*severity*/, const char *msg) {
 
 void steamNetDebugHook(ESteamNetworkingSocketsDebugOutputType /*type*/,
                        const char *msg) {
-  qDebug() << "[SteamNet]" << msg;
+  static QString lastMsg;
+  static int repeatCount = 0;
+  static auto lastLog = std::chrono::steady_clock::now();
+
+  const QString current = QString::fromUtf8(msg ? msg : "");
+  const auto now = std::chrono::steady_clock::now();
+
+  if (current == lastMsg &&
+      now - lastLog < std::chrono::seconds(2)) {
+    ++repeatCount;
+    return;
+  }
+
+  if (repeatCount > 0 && !lastMsg.isEmpty()) {
+    qDebug() << "[SteamNet]" << lastMsg
+             << "(repeated" << repeatCount << "times)";
+  }
+
+  repeatCount = 0;
+  lastMsg = current;
+  lastLog = now;
+
+  qDebug() << "[SteamNet]" << current;
 }
 
 QString renderPopId(SteamNetworkingPOPID pop) {
@@ -218,107 +240,29 @@ Backend::Backend(QObject *parent)
   fixSteamEnvForSudo();
 #endif
 
-  steamReady_ = SteamAPI_Init();
-  if (!steamReady_) {
-    status_ = tr("无法初始化 Steam API，请确认客户端已登录。");
-    return;
-  }
-  if (SteamClient()) {
-    SteamClient()->SetWarningMessageHook(&steamWarningHook);
-  }
-  if (SteamNetworkingUtils()) {
-    SteamNetworkingUtils()->SetDebugOutputFunction(
-        k_ESteamNetworkingSocketsDebugOutputType_Everything,
-        &steamNetDebugHook);
-  }
-  roomName_ = defaultRoomName();
-  emit roomNameChanged();
-
-  steamManager_ = std::make_unique<SteamNetworkingManager>();
-  if (!steamManager_->initialize()) {
-    status_ = tr("Steam 网络初始化失败。");
-    steamReady_ = false;
-    return;
-  }
-
-  roomManager_ = std::make_unique<SteamRoomManager>(steamManager_.get());
-  steamManager_->setRoomManager(roomManager_.get());
-  roomManager_->setAdvertisedMode(inTunMode());
-  roomManager_->setLobbyName(roomName_.toStdString());
-  roomManager_->setPublishLobby(publishLobby_);
-  roomManager_->setLobbyInviteCallback([this](const CSteamID &lobby) {
-    const QString lobbyStr = QString::number(lobby.ConvertToUint64());
-    QMetaObject::invokeMethod(
-        this,
-        [this, lobbyStr]() {
-          setJoinTargetFromLobby(lobbyStr);
-          joinLobby(lobbyStr);
-        },
-        Qt::QueuedConnection);
-  });
-  roomManager_->setLobbyModeChangedCallback([this](bool wantsTun,
-                                                   const CSteamID &lobby) {
-    QMetaObject::invokeMethod(
-        this,
-        [this, wantsTun, lobby]() { handleLobbyModeChanged(wantsTun, lobby); },
-        Qt::QueuedConnection);
-  });
-  roomManager_->setHostLeftCallback([this]() {
-    QMetaObject::invokeMethod(
-        this, [this]() { disconnect(); }, Qt::QueuedConnection);
-  });
-  roomManager_->setChatMessageCallback([this](const CSteamID &sender,
-                                              const std::string &payload) {
-    const uint64_t senderId = sender.ConvertToUint64();
-    const QString text =
-        QString::fromUtf8(payload.data(), static_cast<int>(payload.size()));
-    QMetaObject::invokeMethod(
-        this, [this, senderId, text]() { handleChatMessage(senderId, text); },
-        Qt::QueuedConnection);
-  });
-  roomManager_->setPinnedMessageChangedCallback(
-      [this](const std::string &payload) {
-        const QString text =
-            QString::fromUtf8(payload.data(), static_cast<int>(payload.size()));
-        QMetaObject::invokeMethod(
-            this, [this, text]() { handlePinnedMessageMetadata(text); },
-            Qt::QueuedConnection);
-      });
-  roomManager_->setLobbyListCallback(
-      [this](const std::vector<SteamRoomManager::LobbyInfo> &lobbies) {
-        QMetaObject::invokeMethod(
-            this,
-            [this, lobbies]() {
-              updateLobbiesList(lobbies);
-              setLobbyRefreshing(false);
-            },
-            Qt::QueuedConnection);
-      });
-  lobbiesModel_.setFilter(lobbyFilter_);
-  lobbiesModel_.setSortMode(lobbySortMode_);
-
   workGuard_ = std::make_unique<
       boost::asio::executor_work_guard<boost::asio::io_context::executor_type>>(
       boost::asio::make_work_guard(ioContext_));
   ioThread_ = std::thread([this]() { ioContext_.run(); });
 
-  steamManager_->setMessageHandlerDependencies(ioContext_, server_, localPort_,
-                                               localBindPort_);
-  steamManager_->startMessageHandler();
+  lobbiesModel_.setFilter(lobbyFilter_);
+  lobbiesModel_.setSortMode(lobbySortMode_);
 
   connect(&callbackTimer_, &QTimer::timeout, this, &Backend::tick);
-  callbackTimer_.start(16);
-
   connect(&slowTimer_, &QTimer::timeout, this, &Backend::refreshFriends);
-  slowTimer_.start(15000);
-
   friendsRefreshResetTimer_.setSingleShot(true);
   connect(&friendsRefreshResetTimer_, &QTimer::timeout, this,
           [this]() { setFriendsRefreshing(false); });
-
   statusOverrideTimer_.setSingleShot(true);
   connect(&statusOverrideTimer_, &QTimer::timeout, this,
           [this]() { clearStatusOverride(); });
+  connect(&steamCheckTimer_, &QTimer::timeout, this, [this]() {
+    if (steamReady_) {
+      steamCheckTimer_.stop();
+      return;
+    }
+    tryInitializeSteam();
+  });
 
   connect(&cooldownTimer_, &QTimer::timeout, this, [this]() {
     bool anyChanged = false;
@@ -351,11 +295,14 @@ Backend::Backend(QObject *parent)
       emit inviteCooldownChanged();
     }
   });
+
+  tryInitializeSteam();
+
+  callbackTimer_.start(16);
+  slowTimer_.start(15000);
+  steamCheckTimer_.start(3000);
   cooldownTimer_.start(1000);
 
-  refreshFriends();
-  updateMembersList();
-  refreshHostId();
   updateStatus();
 }
 
@@ -363,6 +310,7 @@ Backend::~Backend() {
   stopVpn();
   callbackTimer_.stop();
   slowTimer_.stop();
+  steamCheckTimer_.stop();
 
   if (steamManager_) {
     steamManager_->stopMessageHandler();
@@ -418,6 +366,10 @@ QString Backend::lobbyId() const {
   }
   CSteamID lobby = roomManager_->getCurrentLobby();
   return lobby.IsValid() ? QString::number(lobby.ConvertToUint64()) : QString();
+}
+
+QString Backend::selfSteamId() const {
+  return selfSteamId_;
 }
 
 QString Backend::lobbyName() const {
@@ -494,7 +446,114 @@ void Backend::setLocalBindPort(int port) {
   emit localBindPortChanged();
 }
 
+bool Backend::tryInitializeSteam() {
+  if (steamReady_) {
+    return true;
+  }
+
+  // Clean up any partial state before retrying.
+  steamManager_.reset();
+  roomManager_.reset();
+
+  steamReady_ = SteamAPI_Init();
+  if (!steamReady_) {
+    status_ = tr("无法初始化 Steam API，请确认客户端已登录。");
+    emit stateChanged();
+    return false;
+  }
+  refreshSelfSteamId();
+
+  if (SteamClient()) {
+    SteamClient()->SetWarningMessageHook(&steamWarningHook);
+  }
+  if (SteamNetworkingUtils()) {
+    SteamNetworkingUtils()->SetDebugOutputFunction(
+        k_ESteamNetworkingSocketsDebugOutputType_Msg, &steamNetDebugHook);
+  }
+
+  roomName_ = defaultRoomName();
+  emit roomNameChanged();
+
+  steamManager_ = std::make_unique<SteamNetworkingManager>();
+  if (!steamManager_->initialize()) {
+    status_ = tr("Steam 网络初始化失败。");
+    steamReady_ = false;
+    steamManager_.reset();
+    emit stateChanged();
+    return false;
+  }
+
+  roomManager_ = std::make_unique<SteamRoomManager>(steamManager_.get());
+  steamManager_->setRoomManager(roomManager_.get());
+  roomManager_->setAdvertisedMode(inTunMode());
+  roomManager_->setLobbyName(roomName_.toStdString());
+  roomManager_->setPublishLobby(publishLobby_);
+  roomManager_->setLobbyInviteCallback([this](const CSteamID &lobby) {
+    const QString lobbyStr = QString::number(lobby.ConvertToUint64());
+    QMetaObject::invokeMethod(
+        this,
+        [this, lobbyStr]() {
+          setJoinTargetFromLobby(lobbyStr);
+          joinLobby(lobbyStr);
+        },
+        Qt::QueuedConnection);
+  });
+  roomManager_->setLobbyModeChangedCallback([this](bool wantsTun,
+                                                   const CSteamID &lobby) {
+    QMetaObject::invokeMethod(
+        this,
+        [this, wantsTun, lobby]() { handleLobbyModeChanged(wantsTun, lobby); },
+        Qt::QueuedConnection);
+  });
+  roomManager_->setHostLeftCallback([this]() {
+    QMetaObject::invokeMethod(
+        this, [this]() { disconnect(); }, Qt::QueuedConnection);
+  });
+  roomManager_->setChatMessageCallback([this](const CSteamID &sender,
+                                              const std::string &payload) {
+    const uint64_t senderId = sender.ConvertToUint64();
+    const QString text =
+        QString::fromUtf8(payload.data(), static_cast<int>(payload.size()));
+    QMetaObject::invokeMethod(
+        this, [this, senderId, text]() { handleChatMessage(senderId, text); },
+        Qt::QueuedConnection);
+  });
+  roomManager_->setPinnedMessageChangedCallback(
+      [this](const std::string &payload) {
+        const QString text =
+            QString::fromUtf8(payload.data(), static_cast<int>(payload.size()));
+        QMetaObject::invokeMethod(
+            this, [this, text]() { handlePinnedMessageMetadata(text); },
+            Qt::QueuedConnection);
+      });
+  roomManager_->setLobbyListCallback(
+      [this](const std::vector<SteamRoomManager::LobbyInfo> &lobbies) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, lobbies]() {
+              updateLobbiesList(lobbies);
+              setLobbyRefreshing(false);
+            },
+            Qt::QueuedConnection);
+      });
+
+  steamManager_->setMessageHandlerDependencies(ioContext_, server_, localPort_,
+                                               localBindPort_);
+  steamManager_->startMessageHandler();
+
+  refreshSelfSteamId();
+  refreshFriends();
+  updateMembersList();
+  refreshHostId();
+  updateStatus();
+  emit stateChanged();
+  return true;
+}
+
 bool Backend::ensureSteamReady(const QString &actionLabel) {
+  if (!steamReady_) {
+    tryInitializeSteam();
+  }
   if (steamReady_) {
     return true;
   }
@@ -623,6 +682,7 @@ void Backend::stopVpn() {
   vpnStartAttempted_ = false;
   tunLocalIp_.clear();
   tunDeviceName_.clear();
+  refreshSelfSteamId();
   if (vpnManager_) {
     vpnManager_->stopMessageHandler();
     vpnManager_->clearPeers();
@@ -871,9 +931,7 @@ void Backend::disconnect() {
   const QString prevLobbyId = lobbyId();
   const int prevMemberCount = membersModel_.count();
   QString mySteamId;
-  if (steamReady_ && SteamUser()) {
-    mySteamId = QString::number(SteamUser()->GetSteamID().ConvertToUint64());
-  }
+  mySteamId = selfSteamId();
 
   if (roomManager_) {
     roomManager_->leaveLobby();
@@ -976,6 +1034,19 @@ void Backend::setChatReminderEnabled(bool enabled) {
   }
   chatReminderEnabled_ = enabled;
   emit chatReminderEnabledChanged();
+}
+
+void Backend::refreshSelfSteamId() {
+  QString nextId;
+  if (steamReady_ && SteamUser()) {
+    nextId = QString::number(SteamUser()->GetSteamID().ConvertToUint64());
+  }
+  if (nextId == selfSteamId_) {
+    return;
+  }
+  selfSteamId_ = nextId;
+  emit stateChanged();
+  updateMembersList();
 }
 
 void Backend::requestUserAttention() {
@@ -1618,6 +1689,8 @@ void Backend::tick() {
     return;
   }
 
+  refreshSelfSteamId();
+
   SteamAPI_RunCallbacks();
   if (steamManager_) {
     steamManager_->update();
@@ -1915,6 +1988,7 @@ void Backend::updateMembersList() {
         (SteamFriends() &&
          SteamFriends()->HasFriend(memberId, k_EFriendFlagImmediate)) ||
         (SteamUser() && memberId == myId);
+    entry.isSelf = (SteamUser() && memberId == myId);
     entry.steamId = QString::number(memberValue);
     entry.displayName =
         QString::fromUtf8(SteamFriends()->GetFriendPersonaName(memberId));
@@ -1958,6 +2032,13 @@ void Backend::updateMembersList() {
       } else if (isHost()) {
         std::lock_guard<std::mutex> lock(steamManager_->getConnectionsMutex());
         for (const auto &conn : steamManager_->getConnections()) {
+          SteamNetConnectionRealTimeStatus_t status{};
+          if (steamManager_->getInterface()->GetConnectionRealTimeStatus(
+                  conn, &status, 0, nullptr) != k_EResultOK ||
+              status.m_eState != k_ESteamNetworkingConnectionState_Connected) {
+            continue; // Transport not ready; skip to avoid ICE asserts.
+          }
+
           SteamNetConnectionInfo_t info;
           if (steamManager_->getInterface()->GetConnectionInfo(conn, &info) &&
               info.m_identityRemote.GetSteamID() == memberId) {
@@ -1980,6 +2061,13 @@ void Backend::updateMembersList() {
   if (isHost()) {
     std::lock_guard<std::mutex> lock(steamManager_->getConnectionsMutex());
     for (const auto &conn : steamManager_->getConnections()) {
+      SteamNetConnectionRealTimeStatus_t status{};
+      if (steamManager_->getInterface()->GetConnectionRealTimeStatus(
+              conn, &status, 0, nullptr) != k_EResultOK ||
+          status.m_eState != k_ESteamNetworkingConnectionState_Connected) {
+        continue; // Still negotiating; skip to avoid noisy asserts.
+      }
+
       SteamNetConnectionInfo_t info;
       if (!steamManager_->getInterface()->GetConnectionInfo(conn, &info)) {
         continue;
@@ -1998,6 +2086,7 @@ void Backend::updateMembersList() {
           (SteamFriends() &&
            SteamFriends()->HasFriend(remoteId, k_EFriendFlagImmediate)) ||
           (SteamUser() && remoteId == myId);
+      entry.isSelf = (SteamUser() && remoteId == myId);
       entry.steamId = QString::number(remoteValue);
       entry.displayName =
           QString::fromUtf8(SteamFriends()->GetFriendPersonaName(remoteId));

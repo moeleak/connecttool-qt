@@ -16,6 +16,7 @@ public:
     PingRole,
     RelayRole,
     IsFriendRole,
+    IsSelfRole,
     IpRole
   };
 
@@ -26,6 +27,7 @@ public:
     int ping = -1;
     QString relay;
     bool isFriend = false;
+    bool isSelf = false;
     QString ip;
   };
 

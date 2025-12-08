@@ -59,6 +59,7 @@ class Backend : public QObject {
                  setChatReminderEnabled NOTIFY chatReminderEnabledChanged)
   Q_PROPERTY(bool friendsRefreshing READ friendsRefreshing NOTIFY
                  friendsRefreshingChanged)
+  Q_PROPERTY(QString selfSteamId READ selfSteamId NOTIFY stateChanged)
   Q_PROPERTY(MembersModel *membersModel READ membersModel CONSTANT)
   Q_PROPERTY(LobbiesModel *lobbiesModel READ lobbiesModel CONSTANT)
   Q_PROPERTY(
@@ -119,6 +120,7 @@ public:
   QVariantList relayPops() const { return relayPops_; }
   QString friendFilter() const { return friendFilter_; }
   bool friendsRefreshing() const { return friendsRefreshing_; }
+  QString selfSteamId() const;
   int inviteCooldown() const { return inviteCooldownSeconds_; }
   QString roomName() const { return roomName_; }
   bool lobbyRefreshing() const { return lobbyRefreshing_; }
@@ -238,6 +240,8 @@ private:
   void ensureVpnRunning();
   bool hasAdminPrivileges() const;
   bool ensureTunPrivileges();
+  bool tryInitializeSteam();
+  void refreshSelfSteamId();
 
   std::unique_ptr<SteamNetworkingManager> steamManager_;
   std::unique_ptr<SteamVpnNetworkingManager> vpnManager_;
@@ -250,6 +254,7 @@ private:
       workGuard_;
   std::thread ioThread_;
   QTimer callbackTimer_;
+  QTimer steamCheckTimer_;
   QTimer slowTimer_;
   QTimer cooldownTimer_;
   QTimer friendsRefreshResetTimer_;
@@ -273,6 +278,7 @@ private:
   SoundNotifier soundNotifier_;
   QPointer<QWindow> mainWindow_;
   QString friendFilter_;
+  QString selfSteamId_;
   std::unordered_map<uint64_t, QString> memberAvatars_;
   std::unordered_map<uint64_t, int> inviteCooldowns_;
   int inviteCooldownSeconds_ = 0;

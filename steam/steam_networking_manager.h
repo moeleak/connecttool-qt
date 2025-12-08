@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <chrono>
 #include <steam_api.h>
 #include <steamnetworkingtypes.h>
 #include <vector>
@@ -114,6 +115,9 @@ private:
 
   bool relayFallbackPending_;
   bool relayFallbackTried_;
+  int consecutiveBadIceSamples_ = 0;
+  std::chrono::steady_clock::time_point lastRelayFallback_;
+  std::chrono::steady_clock::time_point lastIceTimeout_;
 
   // Callback
   static void OnSteamNetConnectionStatusChanged(
