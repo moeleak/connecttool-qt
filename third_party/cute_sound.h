@@ -1741,7 +1741,8 @@ cs_error_t cs_init(void* os_handle, unsigned play_frequency_in_Hz, int buffered_
 		if (res != DS_OK) CUTE_SOUND_ERROR_SETFORMAT_FAILED;
 
 		bufdesc.dwSize = sizeof(bufdesc);
-		bufdesc.dwFlags = DSBCAPS_GETCURRENTPOSITION2;
+		// Keep playing when window is not focused/minimized.
+		bufdesc.dwFlags = DSBCAPS_GETCURRENTPOSITION2 | DSBCAPS_GLOBALFOCUS;
 		bufdesc.dwBufferBytes = buffer_size;
 		bufdesc.lpwfxFormat = &format;
 		res = IDirectSound_CreateSoundBuffer(dsound, &bufdesc, &secondary_buffer, 0);
