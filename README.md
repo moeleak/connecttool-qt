@@ -128,3 +128,7 @@ Connecting to host 10.103.59.48, port 5201
 
 iperf Done.
 ```
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=moeleak/connecttool-qt&type=date&legend=top-left)](https://www.star-history.com/#moeleak/connecttool-qt&type=date&legend=top-left)
