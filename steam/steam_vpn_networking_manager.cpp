@@ -2,9 +2,10 @@
 #include "steam_vpn_bridge.h"
 #include "vpn_message_handler.h"
 #include "../net/vpn_protocol.h"
+#include "logging.h"
 
 #include <algorithm>
-#include <iostream>
+#include <sstream>
 #include <steam_api.h>
 #include <isteamnetworkingutils.h>
 
@@ -20,7 +21,7 @@ SteamVpnNetworkingManager::~SteamVpnNetworkingManager() {
 
 bool SteamVpnNetworkingManager::initialize() {
   if (!SteamAPI_IsSteamRunning()) {
-    std::cerr << "Steam is not running" << std::endl;
+    ConnectToolLogging::logSteam("Steam is not running");
     return false;
   }
 
@@ -70,8 +71,8 @@ bool SteamVpnNetworkingManager::initialize() {
 
   messagesInterface_ = SteamNetworkingMessages();
   if (!messagesInterface_) {
-    std::cerr << "Failed to get ISteamNetworkingMessages interface"
-              << std::endl;
+    ConnectToolLogging::logSteam(
+        "Failed to get ISteamNetworkingMessages interface");
     return false;
   }
 
@@ -147,12 +148,15 @@ void SteamVpnNetworkingManager::addPeer(CSteamID peerID) {
   const EResult result = messagesInterface_->SendMessageToUser(
       identity, &hello, sizeof(hello), flags, VPN_CHANNEL);
   if (result == k_EResultOK) {
-    std::cout << "[SteamVPN] Sent SESSION_HELLO to "
-              << peerID.ConvertToUint64() << std::endl;
+    std::ostringstream oss;
+    oss << "[SteamVPN] Sent SESSION_HELLO to "
+        << peerID.ConvertToUint64();
+    ConnectToolLogging::logSteam(oss.str());
   } else {
-    std::cout << "[SteamVPN] Failed to send SESSION_HELLO to "
-              << peerID.ConvertToUint64() << ", result: " << result
-              << std::endl;
+    std::ostringstream oss;
+    oss << "[SteamVPN] Failed to send SESSION_HELLO to "
+        << peerID.ConvertToUint64() << ", result: " << result;
+    ConnectToolLogging::logSteam(oss.str());
   }
   if (vpnBridge_) {
     vpnBridge_->onUserJoined(peerID);
@@ -284,21 +288,30 @@ void SteamVpnNetworkingManager::handleIncomingVpnMessage(
 void SteamVpnNetworkingManager::OnSessionRequest(
     SteamNetworkingMessagesSessionRequest_t *pCallback) {
   const CSteamID remoteSteamID = pCallback->m_identityRemote.GetSteamID();
-  std::cout << "[SteamVPN] Session request from "
-            << remoteSteamID.ConvertToUint64() << std::endl;
+  {
+    std::ostringstream oss;
+    oss << "[SteamVPN] Session request from "
+        << remoteSteamID.ConvertToUint64();
+    ConnectToolLogging::logSteam(oss.str());
+  }
   bool accept = false;
   accept = true;
   if (messagesInterface_) {
     messagesInterface_->AcceptSessionWithUser(pCallback->m_identityRemote);
-    std::cout << "[SteamVPN] Accepted session from known peer" << std::endl;
+    ConnectToolLogging::logSteam(
+        "[SteamVPN] Accepted session from known peer");
   }
 }
 
 void SteamVpnNetworkingManager::OnSessionFailed(
     SteamNetworkingMessagesSessionFailed_t *pCallback) {
   const CSteamID remoteSteamID = pCallback->m_info.m_identityRemote.GetSteamID();
-  std::cout << "[SteamVPN] Session failed with "
-            << remoteSteamID.ConvertToUint64() << ": "
-            << pCallback->m_info.m_szEndDebug << std::endl;
+  {
+    std::ostringstream oss;
+    oss << "[SteamVPN] Session failed with "
+        << remoteSteamID.ConvertToUint64() << ": "
+        << pCallback->m_info.m_szEndDebug;
+    ConnectToolLogging::logSteam(oss.str());
+  }
   removePeer(remoteSteamID);
 }

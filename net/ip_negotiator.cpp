@@ -1,6 +1,7 @@
 #include "ip_negotiator.h"
+#include "logging.h"
 #include <cstring>
-#include <iostream>
+#include <sstream>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -20,8 +21,11 @@ void IpNegotiator::initialize(CSteamID localSteamID, uint32_t baseIP,
   baseIP_ = baseIP;
   subnetMask_ = subnetMask;
   localNodeId_ = NodeIdentity::generate(localSteamID);
-  std::cout << "Generated Node ID: " << NodeIdentity::toString(localNodeId_)
-            << std::endl;
+  {
+    std::ostringstream oss;
+    oss << "Generated Node ID: " << NodeIdentity::toString(localNodeId_);
+    ConnectToolLogging::logNet(oss.str());
+  }
 }
 
 void IpNegotiator::reset() {
@@ -59,10 +63,14 @@ void IpNegotiator::startNegotiation() {
   candidateIP_ = findNextAvailableIP(candidateIP_);
   state_ = NegotiationState::PROBING;
 
-  std::cout << "Probing IP: " << ((candidateIP_ >> 24) & 0xFF) << "."
-            << ((candidateIP_ >> 16) & 0xFF) << "."
-            << ((candidateIP_ >> 8) & 0xFF) << "." << (candidateIP_ & 0xFF)
-            << " (offset=" << probeOffset_ << ")" << std::endl;
+  {
+    std::ostringstream oss;
+    oss << "Probing IP: " << ((candidateIP_ >> 24) & 0xFF) << "."
+        << ((candidateIP_ >> 16) & 0xFF) << "."
+        << ((candidateIP_ >> 8) & 0xFF) << "." << (candidateIP_ & 0xFF)
+        << " (offset=" << probeOffset_ << ")";
+    ConnectToolLogging::logNet(oss.str());
+  }
 
   sendProbeRequest();
   probeStartTime_ = std::chrono::steady_clock::now();
@@ -155,8 +163,9 @@ void IpNegotiator::checkTimeout() {
                                .count();
     const int64_t heartbeatAge = currentMs - conflict.lastHeartbeatMs;
     if (heartbeatAge >= HEARTBEAT_EXPIRY_MS) {
-      std::cout << "Ignoring stale node (heartbeat age: " << heartbeatAge
-                << "ms)" << std::endl;
+      std::ostringstream oss;
+      oss << "Ignoring stale node (heartbeat age: " << heartbeatAge << "ms)";
+      ConnectToolLogging::logNet(oss.str());
       continue;
     }
 
@@ -173,11 +182,14 @@ void IpNegotiator::checkTimeout() {
       sendForcedRelease(candidateIP_, steamID);
     }
 
-    std::cout << "IP negotiation success. Local IP: "
-              << ((candidateIP_ >> 24) & 0xFF) << "."
-              << ((candidateIP_ >> 16) & 0xFF) << "."
-              << ((candidateIP_ >> 8) & 0xFF) << "." << (candidateIP_ & 0xFF)
-              << std::endl;
+    {
+      std::ostringstream oss;
+      oss << "IP negotiation success. Local IP: "
+          << ((candidateIP_ >> 24) & 0xFF) << "."
+          << ((candidateIP_ >> 16) & 0xFF) << "."
+          << ((candidateIP_ >> 8) & 0xFF) << "." << (candidateIP_ & 0xFF);
+      ConnectToolLogging::logNet(oss.str());
+    }
 
     state_ = NegotiationState::STABLE;
     localIP_ = candidateIP_;
@@ -187,8 +199,8 @@ void IpNegotiator::checkTimeout() {
       successCallback_(localIP_, localNodeId_);
     }
   } else {
-    std::cout << "Lost IP arbitration, reselecting with new offset..."
-              << std::endl;
+    ConnectToolLogging::logNet(
+        "Lost IP arbitration, reselecting with new offset...");
     probeOffset_++;
     startNegotiation();
   }
@@ -206,7 +218,8 @@ void IpNegotiator::handleProbeRequest(const ProbeRequestPayload &request,
     if (NodeIdentity::hasPriority(localNodeId_, request.nodeId)) {
       shouldRespond = true;
     } else {
-      std::cout << "Lost probe contention, reselecting..." << std::endl;
+      ConnectToolLogging::logNet(
+          "Lost probe contention, reselecting...");
       probeOffset_++;
       startNegotiation();
       return;
@@ -225,7 +238,7 @@ void IpNegotiator::handleProbeRequest(const ProbeRequestPayload &request,
     sendCallback_(VpnMessageType::PROBE_RESPONSE,
                   reinterpret_cast<const uint8_t *>(&response),
                   sizeof(response), senderSteamID, true);
-    std::cout << "Sent conflict response for IP" << std::endl;
+    ConnectToolLogging::logNet("Sent conflict response for IP");
   }
 }
 
@@ -244,23 +257,31 @@ void IpNegotiator::handleProbeResponse(const ProbeResponsePayload &response,
   info.lastHeartbeatMs = response.lastHeartbeatMs;
   info.senderSteamID = senderSteamID;
   collectedConflicts_.push_back(info);
-  std::cout << "Received conflict response from node "
-            << NodeIdentity::toString(response.nodeId) << std::endl;
+  {
+    std::ostringstream oss;
+    oss << "Received conflict response from node "
+        << NodeIdentity::toString(response.nodeId);
+    ConnectToolLogging::logNet(oss.str());
+  }
 }
 
 void IpNegotiator::handleAddressAnnounce(
     const AddressAnnouncePayload &announce, CSteamID peerSteamID,
     const std::string &peerName) {
   const uint32_t announcedIP = ntohl(announce.ipAddress);
-  std::cout << "Received address announce: " << ((announcedIP >> 24) & 0xFF)
-            << "." << ((announcedIP >> 16) & 0xFF) << "."
-            << ((announcedIP >> 8) & 0xFF) << "." << (announcedIP & 0xFF)
-            << " from node " << NodeIdentity::toString(announce.nodeId)
-            << std::endl;
+  {
+    std::ostringstream oss;
+    oss << "Received address announce: " << ((announcedIP >> 24) & 0xFF)
+        << "." << ((announcedIP >> 16) & 0xFF) << "."
+        << ((announcedIP >> 8) & 0xFF) << "." << (announcedIP & 0xFF)
+        << " from node " << NodeIdentity::toString(announce.nodeId);
+    ConnectToolLogging::logNet(oss.str());
+  }
 
   if (announcedIP == localIP_ && state_ == NegotiationState::STABLE) {
     if (!NodeIdentity::hasPriority(localNodeId_, announce.nodeId)) {
-      std::cout << "Address conflict detected, reselecting..." << std::endl;
+      ConnectToolLogging::logNet(
+          "Address conflict detected, reselecting...");
       probeOffset_++;
       startNegotiation();
       return;
@@ -288,7 +309,8 @@ void IpNegotiator::handleForcedRelease(const ForcedReleasePayload &release,
   }
 
   if (shouldRelease) {
-    std::cout << "Received forced release, reselecting..." << std::endl;
+    ConnectToolLogging::logNet(
+        "Received forced release, reselecting...");
     probeOffset_++;
     state_ = NegotiationState::IDLE;
     startNegotiation();
@@ -330,7 +352,7 @@ void IpNegotiator::sendForcedRelease(uint32_t ipAddress,
   sendCallback_(VpnMessageType::FORCED_RELEASE,
                 reinterpret_cast<const uint8_t *>(&payload), sizeof(payload),
                 targetSteamID, true);
-  std::cout << "Sent forced release" << std::endl;
+  ConnectToolLogging::logNet("Sent forced release");
 }
 
 void IpNegotiator::markIPUsed(uint32_t ip) {

@@ -1,7 +1,8 @@
 #include "tcp_server.h"
 #include "../steam/steam_networking_manager.h"
-#include <iostream>
 #include <algorithm>
+#include "logging.h"
+#include <sstream>
 
 TCPServer::TCPServer(int port, SteamNetworkingManager* manager) : port_(port), running_(false), acceptor_(io_context_), work_(boost::asio::make_work_guard(io_context_)), manager_(manager) {}
 
@@ -17,15 +18,21 @@ bool TCPServer::start() {
 
         running_ = true;
         serverThread_ = std::thread([this]() { 
-            std::cout << "Server thread started" << std::endl;
+            ConnectToolLogging::logNet("Server thread started");
             io_context_.run(); 
-            std::cout << "Server thread stopped" << std::endl;
+            ConnectToolLogging::logNet("Server thread stopped");
         });
         start_accept();
-        std::cout << "TCP server started on port " << port_ << std::endl;
+        {
+            std::ostringstream oss;
+            oss << "TCP server started on port " << port_;
+            ConnectToolLogging::logNet(oss.str());
+        }
         return true;
     } catch (const std::exception& e) {
-        std::cerr << "Failed to start TCP server: " << e.what() << std::endl;
+        std::ostringstream oss;
+        oss << "Failed to start TCP server: " << e.what();
+        ConnectToolLogging::logNet(oss.str());
         return false;
     }
 }
@@ -71,7 +78,7 @@ void TCPServer::start_accept() {
     auto socket = std::make_shared<tcp::socket>(io_context_);
     acceptor_.async_accept(*socket, [this, socket](const boost::system::error_code& error) {
         if (!error) {
-            std::cout << "New client connected" << std::endl;
+            ConnectToolLogging::logNet("New client connected");
             // Low latency between local TCP and Steam tunnel
             boost::system::error_code ec;
             socket->set_option(tcp::no_delay(true), ec);
@@ -100,12 +107,14 @@ void TCPServer::start_read(std::shared_ptr<tcp::socket> socket, std::string id) 
                 auto multiplexManager = manager_->getMessageHandler()->getMultiplexManager(manager_->getConnection());
                 multiplexManager->sendTunnelPacket(id, buffer->data(), bytes_transferred, 0);
             } else {
-                std::cout << "Not connected to Steam, skipping forward" << std::endl;
+                ConnectToolLogging::logNet("Not connected to Steam, skipping forward");
             }
             sendToAll(buffer->data(), bytes_transferred, socket);
             start_read(socket, id);
         } else {
-            std::cout << "TCP client " << id << " disconnected or error: " << error.message() << std::endl;
+            std::ostringstream oss;
+            oss << "TCP client " << id << " disconnected or error: " << error.message();
+            ConnectToolLogging::logNet(oss.str());
             // Send disconnect packet
             if (manager_->isConnected()) {
                 auto multiplexManager = manager_->getMessageHandler()->getMultiplexManager(manager_->getConnection());

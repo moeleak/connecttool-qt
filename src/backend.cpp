@@ -468,7 +468,7 @@ bool Backend::tryInitializeSteam() {
   }
   if (SteamNetworkingUtils()) {
     SteamNetworkingUtils()->SetDebugOutputFunction(
-        k_ESteamNetworkingSocketsDebugOutputType_Msg, &steamNetDebugHook);
+        k_ESteamNetworkingSocketsDebugOutputType_Important, &steamNetDebugHook);
   }
 
   roomName_ = defaultRoomName();

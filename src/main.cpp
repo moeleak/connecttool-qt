@@ -5,11 +5,43 @@
 
 #include <QCoreApplication>
 #include <QGuiApplication>
+#include <QClipboard>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQmlEngine>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QRegularExpression>
+#include <QTimer>
+
+#include <optional>
+
+namespace {
+
+std::optional<QString> parseShareCodeLobbyId(const QString &text) {
+  const QString trimmed = text.trimmed();
+  if (trimmed.isEmpty()) {
+    return std::nullopt;
+  }
+
+  static const QRegularExpression wrappedRe(
+      QStringLiteral(R"(￥CTJOIN:([0-9]{5,20})￥)"));
+  auto match = wrappedRe.match(trimmed);
+  if (match.hasMatch()) {
+    return match.captured(1);
+  }
+
+  static const QRegularExpression plainRe(
+      QStringLiteral(R"(CTJOIN:([0-9]{5,20}))"));
+  match = plainRe.match(trimmed);
+  if (match.hasMatch()) {
+    return match.captured(1);
+  }
+
+  return std::nullopt;
+}
+
+} // namespace
 
 int main(int argc, char *argv[]) {
   QCoreApplication::setOrganizationName(QStringLiteral("ConnectTool"));
@@ -28,6 +60,31 @@ int main(int argc, char *argv[]) {
                                         "Provided by backend");
 
   Backend backend;
+
+  QString lastShareLobbyId;
+  auto tryJoinFromClipboard = [&backend, &lastShareLobbyId]() {
+    if (backend.isHost() || backend.isConnected()) {
+      return;
+    }
+    const QString clipText =
+        QGuiApplication::clipboard()
+            ? QGuiApplication::clipboard()->text()
+            : QString();
+    if (auto id = parseShareCodeLobbyId(clipText)) {
+      if (*id == lastShareLobbyId) {
+        return;
+      }
+      lastShareLobbyId = *id;
+      backend.joinLobby(*id);
+    }
+  };
+
+  // Detect share code from clipboard on launch (Taobao-style).
+  QTimer::singleShot(0, &backend, tryJoinFromClipboard);
+  if (QGuiApplication::clipboard()) {
+    QObject::connect(QGuiApplication::clipboard(), &QClipboard::dataChanged,
+                     &app, tryJoinFromClipboard);
+  }
 
   QQmlApplicationEngine engine;
   engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);

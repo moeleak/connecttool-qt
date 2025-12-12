@@ -1,9 +1,10 @@
 #include "steam_room_manager.h"
 #include "steam_networking_manager.h"
 #include "steam_vpn_networking_manager.h"
+#include "logging.h"
 #include <algorithm>
 #include <cstring>
-#include <iostream>
+#include <sstream>
 #include <isteamnetworkingutils.h>
 #include <utility>
 
@@ -24,27 +25,35 @@ constexpr int kLobbyMaxMembers = 250; // Allow more than the default 4 slots
 SteamFriendsCallbacks::SteamFriendsCallbacks(SteamNetworkingManager *manager,
                                              SteamRoomManager *roomManager)
     : manager_(manager), roomManager_(roomManager) {
-  std::cout << "SteamFriendsCallbacks constructor called" << std::endl;
+  ConnectToolLogging::logSteam(
+      "SteamFriendsCallbacks constructor called");
 }
 
 void SteamFriendsCallbacks::OnGameLobbyJoinRequested(
     GameLobbyJoinRequested_t *pCallback) {
-  std::cout << "GameLobbyJoinRequested received" << std::endl;
+  ConnectToolLogging::logSteam("GameLobbyJoinRequested received");
   if (manager_) {
     CSteamID lobbyID = pCallback->m_steamIDLobby;
-    std::cout << "Lobby ID: " << lobbyID.ConvertToUint64() << std::endl;
+    {
+      std::ostringstream oss;
+      oss << "Lobby ID: " << lobbyID.ConvertToUint64();
+      ConnectToolLogging::logSteam(oss.str());
+    }
     if (roomManager_ && roomManager_->lobbyInviteCallback_) {
       roomManager_->lobbyInviteCallback_(lobbyID);
     } else if (!manager_->isHost() && !manager_->isConnected()) {
-      std::cout << "Joining lobby from request: " << lobbyID.ConvertToUint64()
-                << std::endl;
+      {
+        std::ostringstream oss;
+        oss << "Joining lobby from request: " << lobbyID.ConvertToUint64();
+        ConnectToolLogging::logSteam(oss.str());
+      }
       roomManager_->joinLobby(lobbyID);
     } else {
-      std::cout << "Already host or connected, ignoring lobby join request"
-                << std::endl;
+      ConnectToolLogging::logSteam(
+          "Already host or connected, ignoring lobby join request");
     }
   } else {
-    std::cout << "Manager is null" << std::endl;
+    ConnectToolLogging::logSteam("Manager is null");
   }
 }
 
@@ -88,13 +97,18 @@ void SteamMatchmakingCallbacks::OnLobbyChatMsg(LobbyChatMsg_t *pCallback) {
 void SteamMatchmakingCallbacks::OnLobbyCreated(LobbyCreated_t *pCallback,
                                                bool bIOFailure) {
   if (bIOFailure) {
-    std::cerr << "Failed to create lobby - IO Failure" << std::endl;
+    ConnectToolLogging::logSteam(
+        "Failed to create lobby - IO Failure");
     return;
   }
   if (pCallback->m_eResult == k_EResultOK) {
     roomManager_->setCurrentLobby(pCallback->m_ulSteamIDLobby);
-    std::cout << "Lobby created: "
-              << roomManager_->getCurrentLobby().ConvertToUint64() << std::endl;
+    {
+      std::ostringstream oss;
+      oss << "Lobby created: "
+          << roomManager_->getCurrentLobby().ConvertToUint64();
+      ConnectToolLogging::logSteam(oss.str());
+    }
 
     // Set Rich Presence to enable invite functionality
     SteamFriends()->SetRichPresence("steam_display", "#Status_InLobby");
@@ -102,7 +116,7 @@ void SteamMatchmakingCallbacks::OnLobbyCreated(LobbyCreated_t *pCallback,
         "connect", std::to_string(pCallback->m_ulSteamIDLobby).c_str());
     roomManager_->refreshLobbyMetadata();
   } else {
-    std::cerr << "Failed to create lobby" << std::endl;
+    ConnectToolLogging::logSteam("Failed to create lobby");
   }
 }
 
@@ -112,7 +126,8 @@ void SteamMatchmakingCallbacks::OnLobbyListReceived(LobbyMatchList_t *pCallback,
     return;
   }
   if (bIOFailure) {
-    std::cerr << "Failed to receive lobby list - IO Failure" << std::endl;
+    ConnectToolLogging::logSteam(
+        "Failed to receive lobby list - IO Failure");
     roomManager_->clearLobbies();
     roomManager_->lobbyInfos.clear();
     roomManager_->notifyLobbyListUpdated();
@@ -217,8 +232,11 @@ void SteamMatchmakingCallbacks::OnLobbyListReceived(LobbyMatchList_t *pCallback,
   roomManager_->lobbyInfos = std::move(infos);
   roomManager_->notifyLobbyListUpdated();
 
-  std::cout << "Received " << pCallback->m_nLobbiesMatching << " lobbies"
-            << std::endl;
+  {
+    std::ostringstream oss;
+    oss << "Received " << pCallback->m_nLobbiesMatching << " lobbies";
+    ConnectToolLogging::logSteam(oss.str());
+  }
 }
 
 void SteamMatchmakingCallbacks::OnLobbyDataUpdate(
@@ -257,7 +275,11 @@ void SteamMatchmakingCallbacks::OnLobbyEntered(LobbyEnter_t *pCallback) {
           SteamMatchmaking()->GetLobbyOwner(pCallback->m_ulSteamIDLobby);
       manager_->setHostSteamID(hostID);
     }
-    std::cout << "Entered lobby: " << pCallback->m_ulSteamIDLobby << std::endl;
+    {
+      std::ostringstream oss;
+      oss << "Entered lobby: " << pCallback->m_ulSteamIDLobby;
+      ConnectToolLogging::logSteam(oss.str());
+    }
 
     const bool lobbyIsTun = roomManager_->lobbyWantsTun(
         CSteamID(pCallback->m_ulSteamIDLobby));
@@ -313,7 +335,7 @@ void SteamMatchmakingCallbacks::OnLobbyEntered(LobbyEnter_t *pCallback) {
           *manager_->getServer() =
               std::make_unique<TCPServer>(bindPort, manager_);
           if (!(*manager_->getServer())->start()) {
-            std::cerr << "Failed to start TCP server" << std::endl;
+            ConnectToolLogging::logSteam("Failed to start TCP server");
           }
         }
       }
@@ -321,7 +343,7 @@ void SteamMatchmakingCallbacks::OnLobbyEntered(LobbyEnter_t *pCallback) {
       roomManager_->refreshLobbyMetadata();
     }
   } else {
-    std::cerr << "Failed to enter lobby" << std::endl;
+    ConnectToolLogging::logSteam("Failed to enter lobby");
   }
 }
 
@@ -337,9 +359,12 @@ void SteamMatchmakingCallbacks::OnLobbyChatUpdate(
     return;
   }
 
-  std::cout << "Lobby chat updated for lobby " << pCallback->m_ulSteamIDLobby
-            << " change flags " << pCallback->m_rgfChatMemberStateChange
-            << std::endl;
+  {
+    std::ostringstream oss;
+    oss << "Lobby chat updated for lobby " << pCallback->m_ulSteamIDLobby
+        << " change flags " << pCallback->m_rgfChatMemberStateChange;
+    ConnectToolLogging::logSteam(oss.str());
+  }
 
   const uint32 changeFlags = pCallback->m_rgfChatMemberStateChange;
   const bool memberLeft =
@@ -368,8 +393,8 @@ void SteamMatchmakingCallbacks::OnLobbyChatUpdate(
     if (manager_->isHost()) {
       manager_->closeConnectionToPeer(changedUser);
     } else if (changedUser == manager_->getHostSteamID()) {
-      std::cout << "Host left lobby, disconnecting client locally"
-                << std::endl;
+      ConnectToolLogging::logSteam(
+          "Host left lobby, disconnecting client locally");
       manager_->disconnect();
       roomManager_->leaveLobby();
     }
@@ -433,7 +458,7 @@ bool SteamRoomManager::createLobby() {
   SteamAPICall_t hSteamAPICall =
       SteamMatchmaking()->CreateLobby(k_ELobbyTypePublic, kLobbyMaxMembers);
   if (hSteamAPICall == k_uAPICallInvalid) {
-    std::cerr << "Failed to create lobby" << std::endl;
+    ConnectToolLogging::logSteam("Failed to create lobby");
     return false;
   }
   // Register the call result
@@ -464,8 +489,8 @@ bool SteamRoomManager::searchLobbies() {
   lobbies.clear();
   lobbyInfos.clear();
   if (!SteamMatchmaking()) {
-    std::cerr << "Failed to request lobby list - matchmaking unavailable"
-              << std::endl;
+    ConnectToolLogging::logSteam(
+        "Failed to request lobby list - matchmaking unavailable");
     return false;
   }
   SteamMatchmaking()->AddRequestLobbyListStringFilter(
@@ -475,7 +500,7 @@ bool SteamRoomManager::searchLobbies() {
   SteamMatchmaking()->AddRequestLobbyListResultCountFilter(100);
   SteamAPICall_t hSteamAPICall = SteamMatchmaking()->RequestLobbyList();
   if (hSteamAPICall == k_uAPICallInvalid) {
-    std::cerr << "Failed to request lobby list" << std::endl;
+    ConnectToolLogging::logSteam("Failed to request lobby list");
     return false;
   }
   // Register the call result
@@ -505,10 +530,15 @@ bool SteamRoomManager::startHosting() {
 
   if (networkingManager_->getListenSock() != k_HSteamListenSocket_Invalid) {
     networkingManager_->getIsHost() = true;
-    std::cout << "Created listen socket for hosting game room" << std::endl;
+    ConnectToolLogging::logSteam(
+        "Created listen socket for hosting game room");
+    // Ensure discovery metadata/tag is published even if the lobby-created
+    // callback fired before we marked ourselves as host.
+    refreshLobbyMetadata();
     return true;
   } else {
-    std::cerr << "Failed to create listen socket for hosting" << std::endl;
+    ConnectToolLogging::logSteam(
+        "Failed to create listen socket for hosting");
     leaveLobby();
     return false;
   }

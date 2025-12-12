@@ -1,9 +1,10 @@
 #include "vpn_message_handler.h"
 #include "steam_vpn_networking_manager.h"
 #include "steam_vpn_bridge.h"
-#include "net/vpn_protocol.h"
+#include "../net/vpn_protocol.h"
+#include "logging.h"
 #include <algorithm>
-#include <iostream>
+#include <sstream>
 #include <steam_api.h>
 #include <isteamnetworkingmessages.h>
 
@@ -69,8 +70,9 @@ void VpnMessageHandler::runInternalLoop() {
       internalIoContext_->run();
       break;
     } catch (const std::exception &e) {
-      std::cerr << "Exception in VPN message handler loop: " << e.what()
-                << std::endl;
+      std::ostringstream oss;
+      oss << "Exception in VPN message handler loop: " << e.what();
+      ConnectToolLogging::logSteam(oss.str());
       if (running_) {
         internalIoContext_->restart();
       }

@@ -24,6 +24,51 @@ connecttool-qt 是一款基于 connecttool
 - 支持单一的 TCP 转发模式和跨平台 TUN 虚拟网卡模式，实现异地组网
 - 房间内文字聊天，右键消息可置顶消息，让从其他地方加进来的人也可以看到房间信息快速了解房间
 
+## connecttool-cli（服务器版）
+
+构建后会生成 `connecttool-cli`，用于在无 GUI 的服务器上运行 ConnectTool，并提供一个轻量 Web 管理/邀请入口。
+
+启动：
+
+```
+./connecttool-cli -c config.yaml
+```
+
+示例 `config.yaml`：
+
+```yaml
+server:
+  listen: 0.0.0.0
+  port: 23333
+  admin_token: "change-me"
+logging:
+  steam_file: /var/log/connecttool-steam.log
+connect:
+  mode: tun        # tun 或 tcp
+  room_name: "ConnectTool 房间"
+  local_port: 25565
+  bind_port: 8888
+  publish: true
+```
+
+说明：
+- Steam/SteamNet/SteamVPN 日志写入 `logging.steam_file`。
+- Web server/网络日志直接输出到控制台。
+
+Web API：
+
+- WebUI：访问 `GET /`（导航页）或 `GET /admin/ui`（管理员界面，需要 token）。
+- 访客：`GET /join/<lobbyId>` 返回加入页面，展示分享码供复制（`/invite/<lobbyId>` 仍可用作别名）。
+  - 复制分享码 `￥CTJOIN:<lobbyId>￥` 后打开 ConnectTool，会自动识别并加入。
+- 管理员（需要 token）：
+  - `GET /admin/state` 查看当前状态。
+  - `GET /admin/join` 获取当前房间与 Join 链接（`/admin/invite` 为别名）。
+  - `POST /admin/config` 设置端口/模式，JSON 例：`{"localPort":25565,"localBindPort":8888,"mode":"tun"}`。
+  - `POST /admin/host/start` 一键开房。
+  - `POST /admin/disconnect` 断开/关房。
+
+token 传递方式：`?token=...` 查询参数，或 `Authorization: Bearer ...` / `X-Admin-Token` 请求头。
+
 ## 待开发特性
 
 - 开发 Android 平台

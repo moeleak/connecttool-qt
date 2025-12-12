@@ -1,6 +1,7 @@
 #include "heartbeat_manager.h"
+#include "logging.h"
 #include <cstring>
-#include <iostream>
+#include <sstream>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -35,7 +36,7 @@ void HeartbeatManager::start() {
   running_ = true;
   heartbeatThread_ =
       std::make_unique<std::thread>(&HeartbeatManager::heartbeatLoop, this);
-  std::cout << "Heartbeat manager started" << std::endl;
+  ConnectToolLogging::logNet("Heartbeat manager started");
 }
 
 void HeartbeatManager::stop() {
@@ -47,7 +48,7 @@ void HeartbeatManager::stop() {
     heartbeatThread_->join();
   }
   heartbeatThread_.reset();
-  std::cout << "Heartbeat manager stopped" << std::endl;
+  ConnectToolLogging::logNet("Heartbeat manager stopped");
 }
 
 void HeartbeatManager::reset() {
@@ -104,8 +105,12 @@ void HeartbeatManager::checkExpiredLeases() {
     std::lock_guard<std::mutex> lock(nodeTableMutex_);
     for (auto it = nodeTable_.begin(); it != nodeTable_.end();) {
       if (!it->second.isLocal && it->second.isLeaseExpired()) {
-        std::cout << "Node " << NodeIdentity::toString(it->first)
-                  << " lease expired" << std::endl;
+        {
+          std::ostringstream oss;
+          oss << "Node " << NodeIdentity::toString(it->first)
+              << " lease expired";
+          ConnectToolLogging::logNet(oss.str());
+        }
         expiredNodes.emplace_back(it->first, it->second.ipAddress);
         ipToNodeId_.erase(it->second.ipAddress);
         it = nodeTable_.erase(it);
@@ -188,7 +193,8 @@ bool HeartbeatManager::detectConflict(uint32_t sourceIP,
   std::lock_guard<std::mutex> lock(nodeTableMutex_);
   auto it = ipToNodeId_.find(sourceIP);
   if (it != ipToNodeId_.end() && it->second != senderNodeId) {
-    std::cout << "Packet-level conflict detected for IP" << std::endl;
+    ConnectToolLogging::logNet(
+        "Packet-level conflict detected for IP");
     if (NodeIdentity::hasPriority(it->second, senderNodeId)) {
       auto nodeIt = nodeTable_.find(senderNodeId);
       if (nodeIt != nodeTable_.end()) {

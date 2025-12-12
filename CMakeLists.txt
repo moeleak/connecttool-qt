@@ -94,14 +94,14 @@ if(STEAMWORKS_WEBRTC_LIBRARY)
     list(APPEND STEAMWORKS_RUNTIME_LIBRARIES ${STEAMWORKS_WEBRTC_LIBRARY})
 endif()
 
-add_executable(connecttool-qt
-    src/main.cpp
+set(CONNECTTOOL_COMMON_SOURCES
     src/backend.cpp
     src/lobbies_model.cpp
     src/friends_model.cpp
     src/chat_model.cpp
     src/members_model.cpp
     src/sound_notifier.cpp
+    src/logging.cpp
     net/multiplex_manager.cpp
     net/tcp_server.cpp
     net/ip_negotiator.cpp
@@ -115,15 +115,34 @@ add_executable(connecttool-qt
     steam/steam_vpn_networking_manager.cpp
     steam/steam_vpn_bridge.cpp)
 
+add_executable(connecttool-qt
+    src/main.cpp
+    ${CONNECTTOOL_COMMON_SOURCES})
+
+add_executable(connecttool-cli
+    src/cli_main.cpp
+    ${CONNECTTOOL_COMMON_SOURCES})
+
 if(WIN32)
     target_sources(connecttool-qt PRIVATE tun/tun_windows.cpp)
+    target_sources(connecttool-cli PRIVATE tun/tun_windows.cpp)
 elseif(APPLE)
     target_sources(connecttool-qt PRIVATE tun/tun_macos.cpp)
+    target_sources(connecttool-cli PRIVATE tun/tun_macos.cpp)
 else()
     target_sources(connecttool-qt PRIVATE tun/tun_linux.cpp)
+    target_sources(connecttool-cli PRIVATE tun/tun_linux.cpp)
 endif()
 
 target_include_directories(connecttool-qt PRIVATE
+    src
+    net
+    steam
+    tun
+    third_party
+    ${STEAMWORKS_INCLUDE_DIR})
+
+target_include_directories(connecttool-cli PRIVATE
     src
     net
     steam
@@ -160,8 +179,18 @@ target_link_libraries(connecttool-qt PRIVATE
     Threads::Threads
     ${STEAMWORKS_LIBRARY})
 
+target_link_libraries(connecttool-cli PRIVATE
+    Qt6::Core
+    Qt6::Gui
+    Qt6::Qml
+    Qt6::Network
+    Boost::headers
+    Threads::Threads
+    ${STEAMWORKS_LIBRARY})
+
 if(WIN32)
     target_link_libraries(connecttool-qt PRIVATE iphlpapi ws2_32 dsound)
+    target_link_libraries(connecttool-cli PRIVATE iphlpapi ws2_32 dsound)
 elseif(APPLE)
     find_library(COREAUDIO_LIBRARY CoreAudio)
     find_library(AUDIOUNIT_LIBRARY AudioUnit)
@@ -170,9 +199,14 @@ elseif(APPLE)
         ${COREAUDIO_LIBRARY}
         ${AUDIOUNIT_LIBRARY}
         ${AUDIOTOOLBOX_LIBRARY})
+    target_link_libraries(connecttool-cli PRIVATE
+        ${COREAUDIO_LIBRARY}
+        ${AUDIOUNIT_LIBRARY}
+        ${AUDIOTOOLBOX_LIBRARY})
 else()
     find_package(SDL2 REQUIRED)
     target_link_libraries(connecttool-qt PRIVATE SDL2::SDL2)
+    target_link_libraries(connecttool-cli PRIVATE SDL2::SDL2)
 endif()
 
 # Ensure the Steam redistributable is next to the executable at build and
@@ -182,18 +216,23 @@ add_custom_command(TARGET connecttool-qt POST_BUILD
             ${STEAMWORKS_RUNTIME_LIBRARIES}
             $<TARGET_FILE_DIR:connecttool-qt>)
 
+add_custom_command(TARGET connecttool-cli POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${STEAMWORKS_RUNTIME_LIBRARIES}
+            $<TARGET_FILE_DIR:connecttool-cli>)
+
 if(APPLE)
-    set_target_properties(connecttool-qt PROPERTIES
+    set_target_properties(connecttool-qt connecttool-cli PROPERTIES
         BUILD_RPATH "@loader_path"
         INSTALL_RPATH "@loader_path;@loader_path/../lib")
 elseif(UNIX AND NOT APPLE)
     # Keep Steam redistributables discoverable when running from build or install tree
-    set_target_properties(connecttool-qt PROPERTIES
+    set_target_properties(connecttool-qt connecttool-cli PROPERTIES
         BUILD_RPATH "\$ORIGIN;\$ORIGIN/.."
         INSTALL_RPATH "\$ORIGIN;\$ORIGIN/..")
 elseif(WIN32)
     # Ensure DLLs are discoverable on Windows build environments
-    set_target_properties(connecttool-qt PROPERTIES
+    set_target_properties(connecttool-qt connecttool-cli PROPERTIES
         BUILD_RPATH "$ORIGIN")
 endif()
 
@@ -209,8 +248,10 @@ qt_add_qml_module(connecttool-qt
         qml/ConnectTool/notify.wav)
 
 target_compile_definitions(connecttool-qt PRIVATE CONNECTTOOL_VERSION="${CONNECTTOOL_VERSION}")
+target_compile_definitions(connecttool-cli PRIVATE CONNECTTOOL_VERSION="${CONNECTTOOL_VERSION}")
 
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/steam_appid.txt "480\n")
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/steam_appid.txt DESTINATION bin)
 install(TARGETS connecttool-qt RUNTIME DESTINATION bin)
+install(TARGETS connecttool-cli RUNTIME DESTINATION bin)
 install(FILES ${STEAMWORKS_RUNTIME_LIBRARIES} DESTINATION bin OPTIONAL)

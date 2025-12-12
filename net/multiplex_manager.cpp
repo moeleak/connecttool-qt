@@ -1,9 +1,10 @@
 #include "multiplex_manager.h"
+#include "logging.h"
 #include <algorithm>
 #include <chrono>
 #include <cstring>
-#include <iostream>
 #include <random>
+#include <sstream>
 
 namespace {
 // Keep chunks close to path MTU to reduce Steam UDP fragmentation/lock pressure
@@ -60,7 +61,11 @@ std::string MultiplexManager::addClient(std::shared_ptr<tcp::socket> socket) {
     missingClients_.erase(id);
   }
   startAsyncRead(id);
-  std::cout << "Added client with id " << id << std::endl;
+  {
+    std::ostringstream oss;
+    oss << "Added client with id " << id;
+    ConnectToolLogging::logNet(oss.str());
+  }
   return id;
 }
 
@@ -81,7 +86,9 @@ bool MultiplexManager::removeClient(const std::string &id) {
   }
 
   if (removed) {
-    std::cout << "Removed client with id " << id << std::endl;
+    std::ostringstream oss;
+    oss << "Removed client with id " << id;
+    ConnectToolLogging::logNet(oss.str());
   }
   bool shouldResume = false;
   {
@@ -165,8 +172,10 @@ bool MultiplexManager::trySendPacket(const std::vector<char> &packet) {
   }
 
   if (result != k_EResultNoConnection && result != k_EResultInvalidParam) {
-    std::cerr << "[Multiplex] SendMessageToConnection failed with result "
-              << static_cast<int>(result) << std::endl;
+    std::ostringstream oss;
+    oss << "[Multiplex] SendMessageToConnection failed with result "
+        << static_cast<int>(result);
+    ConnectToolLogging::logNet(oss.str());
   }
   return true;
 }
@@ -308,7 +317,7 @@ void MultiplexManager::sendTunnelPacket(const std::string &id, const char *data,
 void MultiplexManager::handleTunnelPacket(const char *data, size_t len) {
   size_t idLen = 7; // 6 + null
   if (len < idLen + sizeof(uint32_t)) {
-    std::cerr << "Invalid tunnel packet size" << std::endl;
+    ConnectToolLogging::logNet("Invalid tunnel packet size");
     return;
   }
   std::string id(data, 6);
@@ -320,8 +329,12 @@ void MultiplexManager::handleTunnelPacket(const char *data, size_t len) {
     auto socket = getClient(id);
     if (!socket && isHost_ && localPort_ > 0) {
       // 如果是主持且没有对应的 TCP Client，创建一个连接到本地端口
-      std::cout << "Creating new TCP client for id " << id
-                << " connecting to localhost:" << localPort_ << std::endl;
+      {
+        std::ostringstream oss;
+        oss << "Creating new TCP client for id " << id
+            << " connecting to localhost:" << localPort_;
+        ConnectToolLogging::logNet(oss.str());
+      }
       try {
         const auto now = std::chrono::steady_clock::now();
         auto it = recentConnectFail_.find(id);
@@ -344,13 +357,18 @@ void MultiplexManager::handleTunnelPacket(const char *data, size_t len) {
           readBuffers_[id].resize(1048576);
           socket = newSocket;
         }
-        std::cout << "Successfully created TCP client for id " << id
-                  << std::endl;
+        {
+          std::ostringstream oss;
+          oss << "Successfully created TCP client for id " << id;
+          ConnectToolLogging::logNet(oss.str());
+        }
         startAsyncRead(tempId);
         recentConnectFail_.erase(id);
       } catch (const std::exception &e) {
-        std::cerr << "Failed to create TCP client for id " << id << ": "
-                  << e.what() << std::endl;
+        std::ostringstream oss;
+        oss << "Failed to create TCP client for id " << id << ": "
+            << e.what();
+        ConnectToolLogging::logNet(oss.str());
         recentConnectFail_[id] = std::chrono::steady_clock::now();
         sendTunnelPacket(id, nullptr, 0, 1);
         return;
@@ -365,31 +383,41 @@ void MultiplexManager::handleTunnelPacket(const char *data, size_t len) {
           [this, id, payload](const boost::system::error_code &writeEc,
                               std::size_t) {
             if (writeEc) {
-              std::cout << "Error writing to TCP client " << id << ": "
-                        << writeEc.message() << std::endl;
+              std::ostringstream oss;
+              oss << "Error writing to TCP client " << id << ": "
+                  << writeEc.message();
+              ConnectToolLogging::logNet(oss.str());
               removeClient(id);
             }
           });
     } else {
       if (missingClients_.insert(id).second) {
-        std::cerr << "No client found for id " << id << std::endl;
+        std::ostringstream oss;
+        oss << "No client found for id " << id;
+        ConnectToolLogging::logNet(oss.str());
       }
       sendTunnelPacket(id, nullptr, 0, 1);
     }
   } else if (type == 1) {
     // Disconnect packet
     if (removeClient(id)) {
-      std::cout << "Client " << id << " disconnected" << std::endl;
+      std::ostringstream oss;
+      oss << "Client " << id << " disconnected";
+      ConnectToolLogging::logNet(oss.str());
     }
   } else {
-    std::cerr << "Unknown packet type " << type << std::endl;
+    std::ostringstream oss;
+    oss << "Unknown packet type " << type;
+    ConnectToolLogging::logNet(oss.str());
   }
 }
 
 void MultiplexManager::startAsyncRead(const std::string &id) {
   auto socket = getClient(id);
   if (!socket) {
-    std::cout << "Error: Socket is null for id " << id << std::endl;
+    std::ostringstream oss;
+    oss << "Error: Socket is null for id " << id;
+    ConnectToolLogging::logNet(oss.str());
     return;
   }
   socket->async_read_some(
@@ -407,8 +435,10 @@ void MultiplexManager::startAsyncRead(const std::string &id) {
           }
           startAsyncRead(id);
         } else {
-          std::cout << "Error reading from TCP client " << id << ": "
-                    << ec.message() << std::endl;
+          std::ostringstream oss;
+          oss << "Error reading from TCP client " << id << ": "
+              << ec.message();
+          ConnectToolLogging::logNet(oss.str());
           removeClient(id);
         }
       });
