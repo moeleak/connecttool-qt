@@ -5,6 +5,7 @@
 
 #include <QCoreApplication>
 #include <QGuiApplication>
+#include <QOperatingSystemVersion>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQmlEngine>
@@ -14,6 +15,15 @@
 int main(int argc, char *argv[]) {
   QCoreApplication::setOrganizationName(QStringLiteral("ConnectTool"));
   QCoreApplication::setApplicationName(QStringLiteral("ConnectTool"));
+
+#if defined(Q_OS_WIN)
+  if (const auto osVersion = QOperatingSystemVersion::current().version();
+      osVersion < QOperatingSystemVersion::Windows10_1809.version() &&
+      qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) {
+    // Avoid missing text on Windows Server 2016 and older Windows builds.
+    qputenv("QT_QPA_PLATFORM", "windows:nodirectwrite");
+  }
+#endif
 
   QGuiApplication app(argc, argv);
   QQuickStyle::setStyle(QStringLiteral("Material"));
