@@ -18,8 +18,6 @@ concurrency:
 env:
   BUILD_TYPE: Release
   BOOST_VERSION: "1.84.0"
-  QT_VERSION: "6.10.1"
-  QT_LINUX_COMPONENTS: "qt.qt6.6101.gcc_64,qt.qt6.6101.gcc_64.qtdeclarative,qt.qt6.6101.gcc_64.qtquickcontrols2,qt.qt6.6101.gcc_64.qt5compat,qt.qt6.6101.gcc_64.qtshadertools"
 jobs:
   build:
     runs-on: windows-latest
@@ -40,7 +38,7 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: "${{ env.QT_VERSION }}"
+          version: "6.10.1"
           arch: win64_msvc2022_64
           modules: qt5compat qtshadertools
           cache: true
@@ -221,7 +219,7 @@ jobs:
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
-          version: "${{ env.QT_VERSION }}"
+          version: "6.10.1"
           arch: clang_64
           modules: qt5compat qtshadertools
           cache: true
@@ -380,88 +378,14 @@ jobs:
             libxrender1 \
             libxi6 \
             libfuse2
-      - name: Install Qt (Linux, aqt)
-        id: qt_linux
+      - name: Install Qt
         uses: jurplel/install-qt-action@v4
-        continue-on-error: true
         with:
-          version: "${{ env.QT_VERSION }}"
+          version: "6.10.1"
           arch: linux_gcc_64
           modules: qt5compat qtshadertools
           aqtsource: "git+https://github.com/miurahr/aqtinstall.git"
           cache: true
-      - name: Install Qt (Linux, offline installer)
-        if: steps.qt_linux.outcome == 'failure'
-        env:
-          QT_OFFLINE_INSTALLER_URL: ${{ secrets.QT_OFFLINE_INSTALLER_URL }}
-          QT_OFFLINE_COMPONENTS: ${{ secrets.QT_OFFLINE_COMPONENTS }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          installer_url="${QT_OFFLINE_INSTALLER_URL}"
-          if [[ -z "$installer_url" ]]; then
-            echo "::error::QT_OFFLINE_INSTALLER_URL is empty"
-            exit 1
-          fi
-          install_root="$RUNNER_TEMP/Qt"
-          installer_path="$RUNNER_TEMP/qt-installer.run"
-          components="${QT_OFFLINE_COMPONENTS:-${QT_LINUX_COMPONENTS}}"
-          curl -fSLo "$installer_path" "$installer_url"
-          chmod +x "$installer_path"
-          cat > "$RUNNER_TEMP/qt-installer.qs" <<EOF
-          function Controller() {
-            installer.autoRejectMessageBoxes();
-          }
-          Controller.prototype.WelcomePageCallback = function() {
-            gui.clickButton(buttons.NextButton);
-          }
-          Controller.prototype.CredentialsPageCallback = function() {
-            gui.clickButton(buttons.NextButton);
-          }
-          Controller.prototype.IntroductionPageCallback = function() {
-            gui.clickButton(buttons.NextButton);
-          }
-          Controller.prototype.LicenseAgreementPageCallback = function() {
-            var page = gui.currentPageWidget();
-            if (page && page.acceptLicense) {
-              page.acceptLicense();
-            }
-            gui.clickButton(buttons.NextButton);
-          }
-          Controller.prototype.TargetDirectoryPageCallback = function() {
-            gui.currentPageWidget().TargetDirectoryLineEdit.setText("${install_root}");
-            gui.clickButton(buttons.NextButton);
-          }
-          Controller.prototype.ComponentSelectionPageCallback = function() {
-            var page = gui.currentPageWidget();
-            page.deselectAll();
-            var components = "${components}".split(",");
-            for (var i = 0; i < components.length; ++i) {
-              page.selectComponent(components[i]);
-            }
-            gui.clickButton(buttons.NextButton);
-          }
-          Controller.prototype.ReadyForInstallationPageCallback = function() {
-            gui.clickButton(buttons.NextButton);
-          }
-          Controller.prototype.FinishedPageCallback = function() {
-            gui.clickButton(buttons.FinishButton);
-          }
-          EOF
-          "$installer_path" --platform minimal --script "$RUNNER_TEMP/qt-installer.qs"
-          qt_dir="$install_root/${QT_VERSION}/gcc_64"
-          echo "Qt6_DIR=$qt_dir/lib/cmake/Qt6" >> "$GITHUB_ENV"
-          echo "CMAKE_PREFIX_PATH=$qt_dir" >> "$GITHUB_ENV"
-          echo "$qt_dir/bin" >> "$GITHUB_PATH"
-      - name: Verify Qt install (Linux)
-        if: always()
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ ! -d "${Qt6_DIR:-}" ]]; then
-            echo "::error::Qt ${QT_VERSION} not installed. Provide QT_OFFLINE_INSTALLER_URL or ensure aqt supports this version."
-            exit 1
-          fi
       - name: Download Boost headers
         shell: bash
         run: |
@@ -512,21 +436,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          install_dir="$RUNNER_TEMP/linuxdeploy"
-          mkdir -p "$install_dir"
-          curl -fSLo linuxdeploy.AppImage \
+          mkdir -p "$HOME/.local/bin"
+          curl -fSLo "$HOME/.local/bin/linuxdeploy" \
             https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          curl -fSLo linuxdeploy-plugin-qt.AppImage \
+          curl -fSLo "$HOME/.local/bin/linuxdeploy-plugin-qt" \
             https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
-          chmod +x linuxdeploy.AppImage linuxdeploy-plugin-qt.AppImage
-          rm -rf squashfs-root
-          ./linuxdeploy.AppImage --appimage-extract
-          install -m 755 squashfs-root/AppRun "$install_dir/linuxdeploy"
-          rm -rf squashfs-root
-          ./linuxdeploy-plugin-qt.AppImage --appimage-extract
-          install -m 755 squashfs-root/AppRun "$install_dir/linuxdeploy-plugin-qt"
-          rm -rf squashfs-root
-          echo "$install_dir" >> "$GITHUB_PATH"
+          chmod +x "$HOME/.local/bin/linuxdeploy" "$HOME/.local/bin/linuxdeploy-plugin-qt"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Build AppImage
         shell: bash
         env:
