@@ -36,7 +36,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install Qt
-        uses: jurplel/install-qt-action@v3
+        uses: jurplel/install-qt-action@v4
         with:
           version: "6.10.1"
           arch: win64_msvc2022_64
@@ -217,7 +217,7 @@ jobs:
       - name: Setup Ninja
         uses: seanmiddleditch/gha-setup-ninja@v3
       - name: Install Qt
-        uses: jurplel/install-qt-action@v3
+        uses: jurplel/install-qt-action@v4
         with:
           version: "6.10.1"
           arch: clang_64
@@ -329,43 +329,75 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          dmg_dir="${{ github.workspace }}/dist/dmg"
-          rm -rf "$dmg_dir"
-          mkdir -p "$dmg_dir"
+          dmg_dir="$(mktemp -d "${RUNNER_TEMP}/connecttool-dmg.XXXXXX")"
+          dmg_path="${{ github.workspace }}/dist/connecttool-qt-macos-x86_64.dmg"
+          rm -f "$dmg_path"
+          mkdir -p "$(dirname "$dmg_path")"
           cp -R "build/connecttool-qt.app" "$dmg_dir/"
           ln -s /Applications "$dmg_dir/Applications"
           hdiutil create \
             -volname "ConnectTool" \
             -srcfolder "$dmg_dir" \
-            -ov -format UDZO \
-            "dist/connecttool-qt-macos-x86_64.dmg"
+            -ov -format UDZO -fs HFS+ \
+            "$dmg_path"
+          rm -rf "$dmg_dir"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: connecttool-qt-macos-x86_64
           path: dist/connecttool-qt-macos-x86_64.dmg
           if-no-files-found: error
-  build-flatpak:
+  build-appimage:
     runs-on: ubuntu-latest
-    name: Build (Flatpak)
-    env:
-      FLATPAK_APP_ID: io.github.moeleak.connecttool-qt
-      FLATPAK_RUNTIME: org.kde.Platform
-      FLATPAK_SDK: org.kde.Sdk
-      FLATPAK_RUNTIME_VERSION: "6.10"
+    name: Build (Linux AppImage)
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           submodules: recursive
-      - name: Install Flatpak tooling
+      - name: Install build dependencies
+        shell: bash
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y flatpak flatpak-builder
-          sudo flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
-          sudo flatpak install -y flathub \
-            "${FLATPAK_RUNTIME}//${FLATPAK_RUNTIME_VERSION}" \
-            "${FLATPAK_SDK}//${FLATPAK_RUNTIME_VERSION}"
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            patchelf \
+            libgl1-mesa-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-0 \
+            libxcb-icccm4 \
+            libxcb-image0 \
+            libxcb-keysyms1 \
+            libxcb-render-util0 \
+            libxcb-xinerama0 \
+            libxcb-xkb1 \
+            libxcb-cursor0 \
+            libxrender1 \
+            libxi6 \
+            libfuse2
+      - name: Install Qt
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.10.1"
+          arch: gcc_64
+          modules: qt5compat qtshadertools
+          cache: true
+      - name: Download Boost headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          BOOST_VERSION_UNDERSCORE="${BOOST_VERSION//./_}"
+          BOOST_URL="https://archives.boost.io/release/${BOOST_VERSION}/source/boost_${BOOST_VERSION_UNDERSCORE}.tar.gz"
+          DEST="$PWD/.cache/boost"
+          mkdir -p "$DEST"
+          curl -fSLo "$DEST/boost_${BOOST_VERSION_UNDERSCORE}.tar.gz" "$BOOST_URL"
+          tar -xf "$DEST/boost_${BOOST_VERSION_UNDERSCORE}.tar.gz" -C "$DEST"
+          BOOST_ROOT="$DEST/boost_${BOOST_VERSION_UNDERSCORE}"
+          echo "BOOST_ROOT=$BOOST_ROOT" >> "$GITHUB_ENV"
+          echo "BOOST_INCLUDEDIR=$BOOST_ROOT" >> "$GITHUB_ENV"
       - name: Download Steamworks SDK
         shell: bash
         run: |
@@ -375,33 +407,77 @@ jobs:
             echo "::error::STEAMWORKS_SDK_URL secret not set"
             exit 1
           fi
-          rm -rf packaging/flatpak/steamworks steamworks_temp steamworks_sdk.zip
+          rm -rf steamworks steamworks_temp steamworks_sdk.zip
           curl -fSLo steamworks_sdk.zip "$SDK_URL"
           unzip -q steamworks_sdk.zip -d steamworks_temp
-          mkdir -p packaging/flatpak/steamworks
+          mkdir -p steamworks
           if [[ -d "steamworks_temp/sdk" ]]; then
-            cp -R steamworks_temp/sdk/. packaging/flatpak/steamworks/
+            cp -R steamworks_temp/sdk/. steamworks/
           else
-            cp -R steamworks_temp/. packaging/flatpak/steamworks/
+            cp -R steamworks_temp/. steamworks/
           fi
           rm -rf steamworks_sdk.zip steamworks_temp
-      - name: Build Flatpak bundle
+      - name: Verify Steamworks SDK
         shell: bash
         run: |
           set -euo pipefail
-          flatpak-builder --force-clean --repo=repo build-dir \
-            packaging/flatpak/io.github.moeleak.connecttool-qt.yml
-          flatpak build-bundle repo connecttool-qt-linux-x86_64.flatpak "${FLATPAK_APP_ID}" \
-            --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
+          header="steamworks/public/steam/steam_api.h"
+          if [[ ! -f "$header" ]]; then
+            echo "::error::Steamworks SDK headers not found at $header"
+            exit 1
+          fi
+          lib="steamworks/redistributable_bin/linux64/libsteam_api.so"
+          if [[ ! -f "$lib" ]]; then
+            echo "::error::Steamworks redistributable not found at $lib"
+            exit 1
+          fi
+      - name: Download linuxdeploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/bin"
+          curl -fSLo linuxdeploy.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          curl -fSLo linuxdeploy-plugin-qt.AppImage \
+            https://github.com/linuxdeploy/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage
+          chmod +x linuxdeploy.AppImage linuxdeploy-plugin-qt.AppImage
+          ./linuxdeploy.AppImage --appimage-extract
+          mv squashfs-root/AppRun "$HOME/.local/bin/linuxdeploy"
+          rm -rf squashfs-root
+          ./linuxdeploy-plugin-qt.AppImage --appimage-extract
+          mv squashfs-root/AppRun "$HOME/.local/bin/linuxdeploy-plugin-qt"
+          rm -rf squashfs-root
+          chmod +x "$HOME/.local/bin/linuxdeploy" "$HOME/.local/bin/linuxdeploy-plugin-qt"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Build AppImage
+        shell: bash
+        env:
+          QML_SOURCES_PATHS: ${{ github.workspace }}/qml
+        run: |
+          set -euo pipefail
+          packaging/appimage/build.sh
+      - name: Collect AppImage
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          appimage=(packaging/appimage/*.AppImage)
+          if (( ${#appimage[@]} == 0 )); then
+            echo "::error::No AppImage produced in packaging/appimage"
+            exit 1
+          fi
+          mkdir -p dist
+          cp "${appimage[0]}" dist/connecttool-qt-linux-x86_64.AppImage
+          echo "artifact_path=dist/connecttool-qt-linux-x86_64.AppImage" >> "$GITHUB_OUTPUT"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: connecttool-qt-linux-x86_64
-          path: connecttool-qt-linux-x86_64.flatpak
+          path: ${{ steps.package.outputs.artifact_path }}
           if-no-files-found: error
   release:
     name: Publish Release
-    needs: [build, build-macos, build-flatpak]
+    needs: [build, build-macos, build-appimage]
     runs-on: ubuntu-latest
     if: github.ref_type == 'tag'
     steps:
@@ -418,8 +494,8 @@ jobs:
               if (( ${#dmg_files[@]} )); then
                 continue
               fi
-              flatpak_files=("$dir"/*.flatpak)
-              if (( ${#flatpak_files[@]} )); then
+              appimage_files=("$dir"/*.AppImage)
+              if (( ${#appimage_files[@]} )); then
                 continue
               fi
               name="$(basename "$dir")"
@@ -434,6 +510,6 @@ jobs:
           files: |
             dist/**/*.zip
             dist/**/*.dmg
-            dist/**/*.flatpak
+            dist/**/*.AppImage
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

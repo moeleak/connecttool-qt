@@ -686,6 +686,7 @@ bool Backend::tryInitializeSteam() {
   fixSteamEnvForWindows();
 #endif
 #ifdef Q_OS_LINUX
+  fixSteamEnvForSudo();
   fixSteamEnvForFlatpak();
 #endif
 
