@@ -417,6 +417,10 @@ jobs:
               if (( ${#dmg_files[@]} )); then
                 continue
               fi
+              flatpak_files=("$dir"/*.flatpak)
+              if (( ${#flatpak_files[@]} )); then
+                continue
+              fi
               name="$(basename "$dir")"
               cmake -E chdir dist cmake -E tar cf "${name}.zip" --format=zip "$name"
             fi
