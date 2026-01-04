@@ -60,7 +60,7 @@
         {
           default = pkgs.stdenv.mkDerivation rec {
             pname = "connecttool-qt";
-            version = "1.5.12";
+            version = "1.5.13";
             dontWrapQtApps = pkgs.stdenv.isDarwin;
 
             # Keep entire working tree (including untracked) so new sources are present.
