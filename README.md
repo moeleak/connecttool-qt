@@ -93,6 +93,36 @@ $ export STEAMWORKS_SDK_DIR=/your/path/to/sdk
 $ nix run github:moeleak/connecttool-qt --impure
 ```
 
+## Linux AppImage 运行问题
+
+在部分 Linux 发行版（如 Ubuntu / Linux Mint）上，运行 AppImage 时可能出现 Qt 版本错误：
+
+```
+libQt6Core.so.6: version `Qt_6.10' not found
+```
+
+这是由于运行时错误地加载了系统 Qt 库，而不是 AppImage 内部自带的 Qt。
+
+### 解决方法
+
+可以尝试使用以下方式运行：
+
+```
+LD_LIBRARY_PATH="" ./connecttool-qt-linux-x86_64.AppImage
+```
+
+或者手动解压 AppImage 后运行内部程序：
+
+```
+./connecttool-qt-linux-x86_64.AppImage --appimage-extract
+cd squashfs-root
+./AppRun
+```
+
+> ⚠️ 注意：该问题属于 AppImage 打包/依赖加载问题，建议后续通过修复打包流程彻底解决。
+
+
+
 > **Apple Silicon 提示（arm64）：** Steamworks 目前只提供 x86_64 的
 > `libsteamwebrtc.dylib`，要启用 ICE 直连需要在 Rosetta 下构建/运行 x86_64
 > 版本。
@@ -102,6 +132,7 @@ $ nix run github:moeleak/connecttool-qt --impure
 >    `sudo launchctl kickstart -k system/org.nixos.nix-daemon`
 > 2. 构建：`nix build .#packages.x86_64-darwin.default --impure -L`
 > 3. 运行：`arch -x86_64 ./result/bin/connecttool-qt`
+
 
 ## Benchmark
 
