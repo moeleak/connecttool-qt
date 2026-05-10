@@ -74,9 +74,10 @@
                 cmake
                 ninja
                 pkg-config
-                qt6.wrapQtAppsHook
                 git
               ]
+              ++ lib.optionals (!stdenv.isDarwin) [ qt6.wrapQtAppsHook ]
+              ++ lib.optionals stdenv.isDarwin [ darwin.autoSignDarwinBinariesHook ]
               ++ lib.optionals stdenv.isLinux [ patchelf ];
 
             buildInputs =
@@ -98,6 +99,8 @@
             ];
 
             configurePhase = ''
+              export NIXPKGS_QT6_QML_IMPORT_PATH="${pkgs.qt6.qtdeclarative}/${pkgs.qt6.qtbase.qtQmlPrefix}:${pkgs.qt6.qt5compat}/${pkgs.qt6.qtbase.qtQmlPrefix}"
+              export NIXPKGS_QT6_PLUGIN_PATH="${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}:${pkgs.qt6.qtsvg}/${pkgs.qt6.qtbase.qtPluginPrefix}"
               CONNECTTOOL_VERSION=${version} cmake -B build -S . -G Ninja $cmakeFlags
             '';
             buildPhase = "cmake --build build";
@@ -107,9 +110,6 @@
               pkgs.lib.optionalString pkgs.stdenv.isLinux ''
                 patchelf --force-rpath --set-rpath "\$ORIGIN" $out/bin/libsteam_api.so
                 wrapProgram $out/bin/connecttool-qt --prefix LD_LIBRARY_PATH : "$out/bin"
-              ''
-              + pkgs.lib.optionalString pkgs.stdenv.isDarwin ''
-                wrapQtApp "$out/connecttool-qt.app/Contents/MacOS/connecttool-qt"
               '';
           };
         }

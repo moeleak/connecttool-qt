@@ -116,6 +116,13 @@ add_executable(connecttool-qt
     steam/steam_vpn_networking_manager.cpp
     steam/steam_vpn_bridge.cpp)
 
+qt_add_resources(connecttool-qt bundled_fonts
+    PREFIX "/fonts"
+    BASE "resources/fonts"
+    FILES
+        resources/fonts/NotoSansCJKsc-Regular.otf
+        resources/fonts/NotoSansCJKsc-Bold.otf)
+
 if(APPLE)
     set_target_properties(connecttool-qt PROPERTIES MACOSX_BUNDLE TRUE)
     set(APP_ICON_MACOS "${CMAKE_SOURCE_DIR}/resources/ConnectTool.icns")
@@ -222,6 +229,9 @@ if(APPLE)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_SOURCE_DIR}/resources/macos/com.connecttool.tunhelper.plist"
                 "$<TARGET_BUNDLE_DIR:connecttool-qt>/Contents/Resources/com.connecttool.tunhelper.plist"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/resources/fonts/LICENSE-NotoSansCJK.txt"
+                "$<TARGET_BUNDLE_DIR:connecttool-qt>/Contents/Resources/LICENSE-NotoSansCJK.txt"
         COMMAND install_name_tool -id
                 "@loader_path/../Frameworks/libsteam_api.dylib"
                 "${_steamworks_bundle_frameworks}/libsteam_api.dylib"
@@ -271,6 +281,15 @@ qt_add_qml_module(connecttool-qt
 
 target_compile_definitions(connecttool-qt PRIVATE CONNECTTOOL_VERSION="${CONNECTTOOL_VERSION}")
 
+if(DEFINED ENV{NIXPKGS_QT6_QML_IMPORT_PATH})
+    target_compile_definitions(connecttool-qt PRIVATE
+        CONNECTTOOL_NIX_QML_IMPORT_PATH="$ENV{NIXPKGS_QT6_QML_IMPORT_PATH}")
+endif()
+if(DEFINED ENV{NIXPKGS_QT6_PLUGIN_PATH})
+    target_compile_definitions(connecttool-qt PRIVATE
+        CONNECTTOOL_NIX_PLUGIN_PATH="$ENV{NIXPKGS_QT6_PLUGIN_PATH}")
+endif()
+
 file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/steam_appid.txt "480\n")
 if(APPLE)
     install(TARGETS connecttool-qt BUNDLE DESTINATION .)
@@ -278,6 +297,7 @@ else()
     install(FILES ${CMAKE_CURRENT_BINARY_DIR}/steam_appid.txt DESTINATION bin)
     install(TARGETS connecttool-qt RUNTIME DESTINATION bin)
     install(FILES ${STEAMWORKS_RUNTIME_LIBRARIES} DESTINATION bin OPTIONAL)
+    install(FILES resources/fonts/LICENSE-NotoSansCJK.txt DESTINATION share/doc/connecttool-qt)
 endif()
 if(UNIX AND NOT APPLE)
     install(FILES resources/connecttool.desktop DESTINATION share/applications)
