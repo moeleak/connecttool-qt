@@ -28,20 +28,18 @@
           steamworksSdkEnv = builtins.getEnv "STEAMWORKS_SDK_DIR";
           steamworksEnvPath =
             if steamworksEnv != "" then
-              builtins.path
-                {
-                  path = steamworksEnv;
-                  name = "steamworks-hint";
-                }
+              builtins.path {
+                path = steamworksEnv;
+                name = "steamworks-hint";
+              }
             else
               null;
           steamworksSdkEnvPath =
             if steamworksSdkEnv != "" then
-              builtins.path
-                {
-                  path = steamworksSdkEnv;
-                  name = "steamworks-sdk";
-                }
+              builtins.path {
+                path = steamworksSdkEnv;
+                name = "steamworks-sdk";
+              }
             else
               null;
           steamworksHint =
@@ -62,7 +60,7 @@
         {
           default = pkgs.stdenv.mkDerivation rec {
             pname = "connecttool-qt";
-            version = "1.5.14";
+            version = "1.5.15";
             dontWrapQtApps = pkgs.stdenv.isDarwin;
 
             # Keep entire working tree (including untracked) so new sources are present.
@@ -106,11 +104,10 @@
             buildPhase = "cmake --build build";
             installPhase = "cmake --install build --prefix $out";
 
-            postFixup =
-              pkgs.lib.optionalString pkgs.stdenv.isLinux ''
-                patchelf --force-rpath --set-rpath "\$ORIGIN" $out/bin/libsteam_api.so
-                wrapProgram $out/bin/connecttool-qt --prefix LD_LIBRARY_PATH : "$out/bin"
-              '';
+            postFixup = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
+              patchelf --force-rpath --set-rpath "\$ORIGIN" $out/bin/libsteam_api.so
+              wrapProgram $out/bin/connecttool-qt --prefix LD_LIBRARY_PATH : "$out/bin"
+            '';
           };
         }
       );
