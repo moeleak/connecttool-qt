@@ -7,16 +7,13 @@
 #include "../steam/steam_vpn_bridge.h"
 #include "../steam/steam_vpn_networking_manager.h"
 #include "firewall_windows.h"
-#ifdef Q_OS_MACOS
-#include "tun_privileged_helper.h"
-#endif
+#include "platform_environment.h"
 
 #include <QClipboard>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
-#include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QJsonArray>
@@ -24,35 +21,18 @@
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QMetaObject>
-#include <QNetworkReply>
-#include <QNetworkRequest>
 #include <QProcess>
 #include <QQmlEngine>
-#include <QSaveFile>
 #include <QSettings>
-#include <QStandardPaths>
 #include <QUrl>
-#include <QWindow>
 #include <QVariantMap>
+#include <QWindow>
 #include <QtDebug>
 #include <algorithm>
 #include <array>
 #include <chrono>
 #include <isteamnetworkingutils.h>
 #include <limits>
-#ifdef Q_OS_WIN
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#include <windows.h>
-#endif
-#if defined(Q_OS_UNIX)
-#include <unistd.h>
-#endif
-#ifdef Q_OS_LINUX
-#include <pwd.h>
-#include <sys/types.h>
-#endif
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -72,62 +52,6 @@ struct PersonaDisplay {
   bool online;
   int priority;
 };
-
-#ifdef Q_OS_MACOS
-QString appleScriptEscape(const QString &value) {
-  QString escaped = value;
-  escaped.replace("\\", "\\\\");
-  escaped.replace("\"", "\\\"");
-  return escaped;
-}
-
-QString shellEscape(const QString &value) {
-  QString escaped = value;
-  escaped.replace("'", "'\\''");
-  return "'" + escaped + "'";
-}
-
-QString locateBundledHelperAsset(const QString &fileName) {
-  const QDir appDir(QCoreApplication::applicationDirPath());
-  const QString resourcePath =
-      appDir.absoluteFilePath(QStringLiteral("../Resources/%1").arg(fileName));
-  if (QFileInfo::exists(resourcePath)) {
-    return QFileInfo(resourcePath).absoluteFilePath();
-  }
-  const QString besideApp = appDir.absoluteFilePath(fileName);
-  if (QFileInfo::exists(besideApp)) {
-    return QFileInfo(besideApp).absoluteFilePath();
-  }
-  return {};
-}
-#endif
-
-bool currentUserIsAdmin() {
-#ifdef Q_OS_WIN
-  HANDLE token = nullptr;
-  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
-    return false;
-  }
-  TOKEN_ELEVATION elevation{};
-  DWORD returnLength = 0;
-  const BOOL ok = GetTokenInformation(token, TokenElevation, &elevation,
-                                      sizeof(elevation), &returnLength);
-  CloseHandle(token);
-  return ok && elevation.TokenIsElevated;
-#elif defined(Q_OS_UNIX)
-  return geteuid() == 0;
-#else
-  return true;
-#endif
-}
-
-bool currentUserHasTunPrivileges() {
-#ifdef Q_OS_MACOS
-  return currentUserIsAdmin() || tun::helperAvailable();
-#else
-  return currentUserIsAdmin();
-#endif
-}
 
 PersonaDisplay personaStateDisplay(EPersonaState state) {
   switch (state) {
@@ -165,12 +89,9 @@ QString defaultRoomName() {
   return QCoreApplication::translate("Backend", "%1 的房间").arg(ownerName);
 }
 
-void steamWarningHook(int /*severity*/, const char *msg) {
-  qDebug() << "[SteamAPI]" << msg;
-}
+void steamWarningHook(int /*severity*/, const char *msg) { qDebug() << "[SteamAPI]" << msg; }
 
-void steamNetDebugHook(ESteamNetworkingSocketsDebugOutputType /*type*/,
-                       const char *msg) {
+void steamNetDebugHook(ESteamNetworkingSocketsDebugOutputType /*type*/, const char *msg) {
   static QString lastMsg;
   static int repeatCount = 0;
   static auto lastLog = std::chrono::steady_clock::now();
@@ -178,15 +99,13 @@ void steamNetDebugHook(ESteamNetworkingSocketsDebugOutputType /*type*/,
   const QString current = QString::fromUtf8(msg ? msg : "");
   const auto now = std::chrono::steady_clock::now();
 
-  if (current == lastMsg &&
-      now - lastLog < std::chrono::seconds(2)) {
+  if (current == lastMsg && now - lastLog < std::chrono::seconds(2)) {
     ++repeatCount;
     return;
   }
 
   if (repeatCount > 0 && !lastMsg.isEmpty()) {
-    qDebug() << "[SteamNet]" << lastMsg
-             << "(repeated" << repeatCount << "times)";
+    qDebug() << "[SteamNet]" << lastMsg << "(repeated" << repeatCount << "times)";
   }
 
   repeatCount = 0;
@@ -202,315 +121,29 @@ QString renderPopId(SteamNetworkingPOPID pop) {
   if (text && text[0] != '\0') {
     return QString::fromLatin1(text);
   }
-  return QStringLiteral("0x%1")
-      .arg(static_cast<uint32_t>(pop), 8, 16, QLatin1Char('0'))
-      .toUpper();
-}
-
-#ifdef Q_OS_WIN
-QString normalizePathForCompare(const QString &path) {
-  return QDir::cleanPath(QDir::fromNativeSeparators(path)).toLower();
-}
-
-QString findSteamInstallDir() {
-  QStringList candidates;
-  const auto addCandidate = [&candidates](const QString &path) {
-    if (!path.isEmpty()) {
-      candidates.push_back(path);
-    }
-  };
-
-  {
-    QSettings steamReg("HKEY_CURRENT_USER\\Software\\Valve\\Steam",
-                       QSettings::NativeFormat);
-    addCandidate(steamReg.value(QStringLiteral("SteamPath")).toString());
-    const QString steamExe =
-        steamReg.value(QStringLiteral("SteamExe")).toString();
-    if (!steamExe.isEmpty()) {
-      addCandidate(QFileInfo(steamExe).absolutePath());
-    }
-  }
-  {
-    QSettings steamReg("HKEY_LOCAL_MACHINE\\Software\\Valve\\Steam",
-                       QSettings::NativeFormat);
-    addCandidate(steamReg.value(QStringLiteral("InstallPath")).toString());
-  }
-  {
-    QSettings steamReg("HKEY_LOCAL_MACHINE\\Software\\WOW6432Node\\Valve\\Steam",
-                       QSettings::NativeFormat);
-    addCandidate(steamReg.value(QStringLiteral("InstallPath")).toString());
-  }
-
-  const QString programFiles = qEnvironmentVariable("ProgramFiles");
-  if (!programFiles.isEmpty()) {
-    addCandidate(QDir(programFiles).filePath(QStringLiteral("Steam")));
-  }
-  const QString programFiles86 = qEnvironmentVariable("ProgramFiles(x86)");
-  if (!programFiles86.isEmpty()) {
-    addCandidate(QDir(programFiles86).filePath(QStringLiteral("Steam")));
-  }
-
-  const bool want64 = (sizeof(void *) == 8);
-  const QString preferredDll =
-      want64 ? QStringLiteral("steamclient64.dll")
-             : QStringLiteral("steamclient.dll");
-  const QString fallbackDll =
-      want64 ? QStringLiteral("steamclient.dll")
-             : QStringLiteral("steamclient64.dll");
-
-  for (const QString &candidate : candidates) {
-    const QString dir =
-        QDir::cleanPath(QDir::fromNativeSeparators(candidate));
-    if (dir.isEmpty()) {
-      continue;
-    }
-    if (QFileInfo::exists(QDir(dir).filePath(preferredDll))) {
-      return dir;
-    }
-  }
-
-  for (const QString &candidate : candidates) {
-    const QString dir =
-        QDir::cleanPath(QDir::fromNativeSeparators(candidate));
-    if (dir.isEmpty()) {
-      continue;
-    }
-    if (QFileInfo::exists(QDir(dir).filePath(fallbackDll))) {
-      return dir;
-    }
-  }
-
-  for (const QString &candidate : candidates) {
-    const QString dir =
-        QDir::cleanPath(QDir::fromNativeSeparators(candidate));
-    if (dir.isEmpty()) {
-      continue;
-    }
-    if (QFileInfo::exists(QDir(dir).filePath(QStringLiteral("steam.exe")))) {
-      return dir;
-    }
-  }
-
-  return QString();
-}
-
-// Help SteamAPI_Init locate steamclient.dll by adding the Steam install
-// directory to DLL search paths.
-void fixSteamEnvForWindows() {
-  const QString steamDir = findSteamInstallDir();
-  if (steamDir.isEmpty()) {
-    return;
-  }
-
-  const QString normalizedSteam = normalizePathForCompare(steamDir);
-  const QString currentPath = QString::fromLocal8Bit(qgetenv("PATH"));
-  const QStringList pathEntries =
-      currentPath.split(';', Qt::SkipEmptyParts);
-  bool hasSteam = false;
-  for (const QString &entry : pathEntries) {
-    if (normalizePathForCompare(entry) == normalizedSteam) {
-      hasSteam = true;
-      break;
-    }
-  }
-  if (!hasSteam) {
-    const QString newPath =
-        QDir::toNativeSeparators(steamDir) +
-        QStringLiteral(";") +
-        currentPath;
-    qputenv("PATH", newPath.toLocal8Bit());
-  }
-
-  const std::wstring wideDir =
-      QDir::toNativeSeparators(steamDir).toStdWString();
-  SetDllDirectoryW(wideDir.c_str());
-}
-#endif
-
-#ifdef Q_OS_LINUX
-bool isFlatpakRuntime() {
-  return qEnvironmentVariableIsSet("FLATPAK_ID") ||
-         QFileInfo::exists(QStringLiteral("/run/.flatpak-info"));
-}
-
-bool steamClientExistsInHome(const QString &homePath) {
-  if (homePath.isEmpty()) {
-    return false;
-  }
-  const QDir homeDir(homePath);
-  const QStringList candidates = {
-      QStringLiteral(".steam/sdk64/steamclient.so"),
-      QStringLiteral(".steam/sdk32/steamclient.so"),
-      QStringLiteral(".local/share/Steam/linux64/steamclient.so"),
-      QStringLiteral(".local/share/Steam/linux32/steamclient.so"),
-      QStringLiteral(".local/share/Steam/ubuntu12_64/steamclient.so"),
-      QStringLiteral(".local/share/Steam/ubuntu12_32/steamclient.so")};
-  for (const QString &relativePath : candidates) {
-    if (QFileInfo::exists(homeDir.filePath(relativePath))) {
-      return true;
-    }
-  }
-  return false;
-}
-
-bool steamPidIndicatesRunning(const QString &pidPath) {
-  QFile pidFile(pidPath);
-  if (!pidFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-    return false;
-  }
-
-  const QByteArray pidLine = pidFile.readLine().trimmed();
-  if (pidLine.isEmpty()) {
-    return false;
-  }
-
-  bool ok = false;
-  const qint64 pidValue = pidLine.toLongLong(&ok);
-  return ok && pidValue > 0;
-}
-
-bool steamRuntimeActiveInHome(const QString &homePath) {
-  if (homePath.isEmpty()) {
-    return false;
-  }
-
-  const QDir homeDir(homePath);
-  const QStringList pidCandidates = {
-      homeDir.filePath(QStringLiteral(".steam/steam.pid")),
-      homeDir.filePath(QStringLiteral(".steam/root/steam.pid")),
-      homeDir.filePath(QStringLiteral(".local/share/Steam/steam.pid"))};
-  for (const QString &pidPath : pidCandidates) {
-    if (QFileInfo::exists(pidPath) && steamPidIndicatesRunning(pidPath)) {
-      return true;
-    }
-  }
-
-  const QStringList pipeCandidates = {
-      homeDir.filePath(QStringLiteral(".steam/steam.pipe"))};
-  for (const QString &pipePath : pipeCandidates) {
-    if (QFileInfo::exists(pipePath)) {
-      return true;
-    }
-  }
-
-  return false;
-}
-
-// Prefer Steam's Flatpak data directory inside Flatpak when the current home
-// doesn't appear to host a running Steam client. This helps SteamAPI_Init
-// locate both steamclient.so and the running client IPC files.
-void fixSteamEnvForFlatpak() {
-  if (!isFlatpakRuntime()) {
-    return;
-  }
-
-  const QByteArray currentHome = qgetenv("HOME");
-  if (currentHome.isEmpty()) {
-    return;
-  }
-  const QString currentHomePath = QString::fromLocal8Bit(currentHome);
-  if (steamRuntimeActiveInHome(currentHomePath)) {
-    return;
-  }
-
-  const QString flatpakHome =
-      QDir(currentHomePath)
-          .filePath(QStringLiteral(".var/app/com.valvesoftware.Steam"));
-  if (steamRuntimeActiveInHome(flatpakHome)) {
-    qputenv("HOME", flatpakHome.toLocal8Bit());
-    return;
-  }
-
-  const bool currentHasClient = steamClientExistsInHome(currentHomePath);
-  const bool flatpakHasClient = steamClientExistsInHome(flatpakHome);
-  if (!currentHasClient && flatpakHasClient) {
-    qputenv("HOME", flatpakHome.toLocal8Bit());
-  }
-}
-
-// When the app is launched with sudo while Steam runs under a normal user,
-// SteamAPI_Init will look in root's home (e.g. /root/.steam) and think Steam
-// is not running. Prefer the invoking user's home/runtime if available.
-void fixSteamEnvForSudo() {
-  if (geteuid() != 0) {
-    return;
-  }
-  const QByteArray sudoUser = qgetenv("SUDO_USER");
-  const QByteArray sudoHomeEnv = qgetenv("SUDO_HOME");
-  if (sudoUser.isEmpty() && sudoHomeEnv.isEmpty()) {
-    return;
-  }
-
-  QByteArray targetHome = sudoHomeEnv;
-  uid_t targetUid = 0;
-  if (targetHome.isEmpty() && !sudoUser.isEmpty()) {
-    struct passwd pwd{};
-    struct passwd *result = nullptr;
-    long bufsize = sysconf(_SC_GETPW_R_SIZE_MAX);
-    if (bufsize < 0) {
-      bufsize = 16384;
-    }
-    std::vector<char> buffer(static_cast<size_t>(bufsize));
-    if (getpwnam_r(sudoUser.constData(), &pwd, buffer.data(), buffer.size(),
-                   &result) == 0 &&
-        result != nullptr && result->pw_dir != nullptr) {
-      targetHome = QByteArray(result->pw_dir);
-      targetUid = result->pw_uid;
-    }
-  } else if (!sudoUser.isEmpty()) {
-    if (struct passwd *pwd = getpwnam(sudoUser.constData())) {
-      targetUid = pwd->pw_uid;
-    }
-  }
-
-  if (!targetHome.isEmpty() && qgetenv("HOME") != targetHome) {
-    qputenv("HOME", targetHome);
-  }
-
-  if (targetUid != 0 && qEnvironmentVariableIsEmpty("XDG_RUNTIME_DIR")) {
-    QByteArray runtime =
-        QByteArray("/run/user/") +
-        QByteArray::number(static_cast<unsigned long long>(targetUid));
-    // Only set it if the path exists; otherwise leave as-is.
-    if (access(runtime.constData(), R_OK | X_OK) == 0) {
-      qputenv("XDG_RUNTIME_DIR", runtime);
-    }
-  }
-}
-#endif
-
-QString stripGhProxyPrefix(const QString &url) {
-  const QString prefix = QStringLiteral("https://gh-proxy.org/");
-  if (url.startsWith(prefix)) {
-    return url.mid(prefix.size());
-  }
-  return url;
+  return QStringLiteral("0x%1").arg(static_cast<uint32_t>(pop), 8, 16, QLatin1Char('0')).toUpper();
 }
 
 } // namespace
 
 Backend::Backend(QObject *parent)
-    : QObject(parent), steamReady_(false), localPort_(25565),
-      localBindPort_(8888), lastTcpClients_(0), lastMemberLogCount_(-1),
+    : QObject(parent), steamReady_(false), localPort_(25565), localBindPort_(8888),
+      lastTcpClients_(0), lastMemberLogCount_(-1),
       roomName_(QCoreApplication::translate("Backend", "ConnectTool 房间")),
-      appVersion_(QStringLiteral(CONNECTTOOL_VERSION)) {
+      appVersion_(QStringLiteral(CONNECTTOOL_VERSION)), updateController_(appVersion_) {
   // Set a default app id so Steam can bootstrap in development environments
   qputenv("SteamAppId", QByteArray("480"));
   qputenv("SteamGameId", QByteArray("480"));
-  updateStatusText_.clear();
+  connect(&updateController_, &UpdateController::infoChanged, this, &Backend::updateInfoChanged);
+  connect(&updateController_, &UpdateController::downloadChanged, this,
+          &Backend::updateDownloadChanged);
 
-#ifdef Q_OS_WIN
-  fixSteamEnvForWindows();
-#endif
-#ifdef Q_OS_LINUX
-  fixSteamEnvForSudo();
-  fixSteamEnvForFlatpak();
-#endif
+  connecttool::platform::prepareSteamEnvironment();
 
-  workGuard_ = std::make_unique<
-      boost::asio::executor_work_guard<boost::asio::io_context::executor_type>>(
-      boost::asio::make_work_guard(ioContext_));
-  ioThread_ = std::thread([this]() { ioContext_.run(); });
+  workGuard_ =
+      std::make_unique<boost::asio::executor_work_guard<boost::asio::io_context::executor_type>>(
+          boost::asio::make_work_guard(ioContext_));
+  ioThread_ = std::jthread([this](std::stop_token) { ioContext_.run(); });
 
   lobbiesModel_.setFilter(lobbyFilter_);
   lobbiesModel_.setSortMode(lobbySortMode_);
@@ -521,8 +154,7 @@ Backend::Backend(QObject *parent)
   connect(&friendsRefreshResetTimer_, &QTimer::timeout, this,
           [this]() { setFriendsRefreshing(false); });
   statusOverrideTimer_.setSingleShot(true);
-  connect(&statusOverrideTimer_, &QTimer::timeout, this,
-          [this]() { clearStatusOverride(); });
+  connect(&statusOverrideTimer_, &QTimer::timeout, this, [this]() { clearStatusOverride(); });
   connect(&steamCheckTimer_, &QTimer::timeout, this, [this]() {
     if (steamReady_) {
       steamCheckTimer_.stop();
@@ -598,12 +230,16 @@ Backend::~Backend() {
 
   ioContext_.stop();
   if (ioThread_.joinable()) {
+    ioThread_.request_stop();
     ioThread_.join();
   }
 
-  // Let the Steam manager handle shutdown/SteamAPI cleanup in its destructor
-  steamManager_.reset();
+  // Destroy callback owners while the Steam API is still available.  The
+  // primary manager shuts the API down, so it must be released last.
   roomManager_.reset();
+  vpnBridge_.reset();
+  vpnManager_.reset();
+  steamManager_.reset();
 }
 
 void Backend::initializeSound(QWindow *window) {
@@ -639,9 +275,7 @@ QString Backend::lobbyId() const {
   return lobby.IsValid() ? QString::number(lobby.ConvertToUint64()) : QString();
 }
 
-QString Backend::selfSteamId() const {
-  return selfSteamId_;
-}
+QString Backend::selfSteamId() const { return selfSteamId_; }
 
 QString Backend::lobbyName() const {
   if (!steamReady_ || !roomManager_ || !SteamMatchmaking()) {
@@ -667,9 +301,7 @@ QString Backend::lobbyName() const {
   return {};
 }
 
-int Backend::tcpClients() const {
-  return server_ ? server_->getClientCount() : 0;
-}
+int Backend::tcpClients() const { return server_ ? server_->getClientCount() : 0; }
 
 void Backend::setJoinTarget(const QString &id) {
   if (joinTarget_ == id) {
@@ -726,13 +358,7 @@ bool Backend::tryInitializeSteam() {
   steamManager_.reset();
   roomManager_.reset();
 
-#ifdef Q_OS_WIN
-  fixSteamEnvForWindows();
-#endif
-#ifdef Q_OS_LINUX
-  fixSteamEnvForSudo();
-  fixSteamEnvForFlatpak();
-#endif
+  connecttool::platform::prepareSteamEnvironment();
 
   steamReady_ = SteamAPI_Init();
   if (!steamReady_) {
@@ -746,8 +372,8 @@ bool Backend::tryInitializeSteam() {
     SteamClient()->SetWarningMessageHook(&steamWarningHook);
   }
   if (SteamNetworkingUtils()) {
-    SteamNetworkingUtils()->SetDebugOutputFunction(
-        k_ESteamNetworkingSocketsDebugOutputType_Msg, &steamNetDebugHook);
+    SteamNetworkingUtils()->SetDebugOutputFunction(k_ESteamNetworkingSocketsDebugOutputType_Msg,
+                                                   &steamNetDebugHook);
   }
 
   roomName_ = defaultRoomName();
@@ -777,34 +403,26 @@ bool Backend::tryInitializeSteam() {
         },
         Qt::QueuedConnection);
   });
-  roomManager_->setLobbyModeChangedCallback([this](bool wantsTun,
-                                                   const CSteamID &lobby) {
+  roomManager_->setLobbyModeChangedCallback([this](bool wantsTun, const CSteamID &lobby) {
     QMetaObject::invokeMethod(
-        this,
-        [this, wantsTun, lobby]() { handleLobbyModeChanged(wantsTun, lobby); },
+        this, [this, wantsTun, lobby]() { handleLobbyModeChanged(wantsTun, lobby); },
         Qt::QueuedConnection);
   });
   roomManager_->setHostLeftCallback([this]() {
-    QMetaObject::invokeMethod(
-        this, [this]() { disconnect(); }, Qt::QueuedConnection);
+    QMetaObject::invokeMethod(this, [this]() { disconnect(); }, Qt::QueuedConnection);
   });
-  roomManager_->setChatMessageCallback([this](const CSteamID &sender,
-                                              const std::string &payload) {
+  roomManager_->setChatMessageCallback([this](const CSteamID &sender, const std::string &payload) {
     const uint64_t senderId = sender.ConvertToUint64();
-    const QString text =
-        QString::fromUtf8(payload.data(), static_cast<int>(payload.size()));
+    const QString text = QString::fromUtf8(payload.data(), static_cast<int>(payload.size()));
     QMetaObject::invokeMethod(
         this, [this, senderId, text]() { handleChatMessage(senderId, text); },
         Qt::QueuedConnection);
   });
-  roomManager_->setPinnedMessageChangedCallback(
-      [this](const std::string &payload) {
-        const QString text =
-            QString::fromUtf8(payload.data(), static_cast<int>(payload.size()));
-        QMetaObject::invokeMethod(
-            this, [this, text]() { handlePinnedMessageMetadata(text); },
-            Qt::QueuedConnection);
-      });
+  roomManager_->setPinnedMessageChangedCallback([this](const std::string &payload) {
+    const QString text = QString::fromUtf8(payload.data(), static_cast<int>(payload.size()));
+    QMetaObject::invokeMethod(
+        this, [this, text]() { handlePinnedMessageMetadata(text); }, Qt::QueuedConnection);
+  });
   roomManager_->setLobbyListCallback(
       [this](const std::vector<SteamRoomManager::LobbyInfo> &lobbies) {
         QMetaObject::invokeMethod(
@@ -816,8 +434,7 @@ bool Backend::tryInitializeSteam() {
             Qt::QueuedConnection);
       });
 
-  steamManager_->setMessageHandlerDependencies(ioContext_, server_, localPort_,
-                                               localBindPort_);
+  steamManager_->setMessageHandlerDependencies(ioContext_, server_, localPort_, localBindPort_);
   steamManager_->startMessageHandler();
 
   refreshSelfSteamId();
@@ -840,7 +457,7 @@ bool Backend::ensureSteamReady(const QString &actionLabel) {
   return false;
 }
 
-bool Backend::hasAdminPrivileges() const { return currentUserHasTunPrivileges(); }
+bool Backend::hasAdminPrivileges() const { return connecttool::platform::hasTunPrivileges(); }
 
 #ifdef Q_OS_MACOS
 void Backend::ensureTunHelperInstalled() {
@@ -848,14 +465,14 @@ void Backend::ensureTunHelperInstalled() {
     return;
   }
   tunHelperInstallAttempted_ = true;
-  if (currentUserIsAdmin() || tun::helperAvailable()) {
+  if (connecttool::platform::hasTunPrivileges()) {
     return;
   }
 
   const QString helperPath =
-      locateBundledHelperAsset(QStringLiteral("connecttool-tun-daemon"));
-  const QString plistPath =
-      locateBundledHelperAsset(QStringLiteral("com.connecttool.tunhelper.plist"));
+      connecttool::platform::locateBundledHelperAsset(QStringLiteral("connecttool-tun-daemon"));
+  const QString plistPath = connecttool::platform::locateBundledHelperAsset(
+      QStringLiteral("com.connecttool.tunhelper.plist"));
   if (helperPath.isEmpty() || plistPath.isEmpty()) {
     qWarning() << "TUN helper assets not found; skipping auto install.";
     return;
@@ -874,23 +491,23 @@ void Backend::ensureTunHelperInstalled() {
                      "/bin/launchctl load -w %4; "
                      "/bin/launchctl kickstart -k system/com.connecttool.tunhelper "
                      "2>/dev/null || true")
-          .arg(shellEscape(helperPath), shellEscape(helperDest),
-               shellEscape(plistPath), shellEscape(plistDest));
+          .arg(connecttool::platform::shellEscape(helperPath),
+               connecttool::platform::shellEscape(helperDest),
+               connecttool::platform::shellEscape(plistPath),
+               connecttool::platform::shellEscape(plistDest));
 
-  const QString appleScript = QStringLiteral(
-                                  "do shell script \"%1\" with administrator privileges")
-                                  .arg(appleScriptEscape(command));
+  const QString appleScript = QStringLiteral("do shell script \"%1\" with administrator privileges")
+                                  .arg(connecttool::platform::appleScriptEscape(command));
 
   auto *process = new QProcess(this);
-  connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-          this, [process](int exitCode, QProcess::ExitStatus status) {
+  connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+          [process](int exitCode, QProcess::ExitStatus status) {
             if (status != QProcess::NormalExit || exitCode != 0) {
               qWarning() << "TUN helper install failed with code" << exitCode;
             }
             process->deleteLater();
           });
-  process->start(QStringLiteral("/usr/bin/osascript"),
-                 {QStringLiteral("-e"), appleScript});
+  process->start(QStringLiteral("/usr/bin/osascript"), {QStringLiteral("-e"), appleScript});
   if (!process->waitForStarted(2000)) {
     qWarning() << "Failed to launch osascript for TUN helper install.";
     process->deleteLater();
@@ -1063,10 +680,8 @@ void Backend::updateVpnInfo() {
   if (!vpnBridge_) {
     return;
   }
-  const QString nextIp =
-      QString::fromStdString(vpnBridge_->getLocalIP()).trimmed();
-  const QString nextDev =
-      QString::fromStdString(vpnBridge_->getTunDeviceName()).trimmed();
+  const QString nextIp = QString::fromStdString(vpnBridge_->getLocalIP()).trimmed();
+  const QString nextDev = QString::fromStdString(vpnBridge_->getTunDeviceName()).trimmed();
   bool changed = false;
   if (nextIp != tunLocalIp_) {
     tunLocalIp_ = nextIp;
@@ -1318,16 +933,13 @@ void Backend::refreshFriends() {
   setFriendsRefreshing(true);
   QVariantList updated;
   std::vector<FriendsModel::Entry> modelData;
-  int idx = 0;
   for (const auto &friendInfo : SteamUtils::getFriendsList()) {
     const QString steamId = QString::number(friendInfo.id.ConvertToUint64());
     const QString displayName = QString::fromStdString(friendInfo.name);
     const QString avatar = QString::fromStdString(friendInfo.avatarDataUrl);
     const PersonaDisplay persona = personaStateDisplay(friendInfo.personaState);
-    const auto cooldownIt =
-        inviteCooldowns_.find(friendInfo.id.ConvertToUint64());
-    const int friendCooldown =
-        cooldownIt != inviteCooldowns_.end() ? cooldownIt->second : 0;
+    const auto cooldownIt = inviteCooldowns_.find(friendInfo.id.ConvertToUint64());
+    const int friendCooldown = cooldownIt != inviteCooldowns_.end() ? cooldownIt->second : 0;
 
     QVariantMap entry;
     entry.insert(QStringLiteral("id"), steamId);
@@ -1339,9 +951,8 @@ void Backend::refreshFriends() {
       entry.insert(QStringLiteral("avatar"), avatar);
     }
     updated.push_back(entry);
-    modelData.push_back({steamId, displayName, avatar, persona.online,
-                         persona.label, persona.priority, friendCooldown});
-    ++idx;
+    modelData.push_back({steamId, displayName, avatar, persona.online, persona.label,
+                         persona.priority, friendCooldown});
   }
   friendsModel_.setFriends(std::move(modelData));
   if (updated != friends_) {
@@ -1398,8 +1009,7 @@ void Backend::requestUserAttention() {
     return;
   }
   // Only nudge the user when the window is not already active.
-  if (QGuiApplication::applicationState() == Qt::ApplicationActive &&
-      mainWindow_->isActive()) {
+  if (QGuiApplication::applicationState() == Qt::ApplicationActive && mainWindow_->isActive()) {
     return;
   }
   mainWindow_->alert(0);
@@ -1415,6 +1025,8 @@ void Backend::setLobbyFilter(const QString &text) {
 }
 
 void Backend::setLobbySortMode(int mode) {
+  mode = std::clamp(mode, static_cast<int>(LobbiesModel::SortByMembers),
+                    static_cast<int>(LobbiesModel::SortByPing));
   if (lobbySortMode_ == mode) {
     return;
   }
@@ -1456,8 +1068,7 @@ bool Backend::applyLobbyModePreference(const CSteamID &lobby) {
     return false;
   }
   const bool wantsTun = roomManager_->lobbyWantsTun(lobby);
-  const ConnectionMode desired =
-      wantsTun ? ConnectionMode::Tun : ConnectionMode::Tcp;
+  const ConnectionMode desired = wantsTun ? ConnectionMode::Tun : ConnectionMode::Tcp;
   if (connectionMode_ != desired) {
     setConnectionMode(static_cast<int>(desired));
   }
@@ -1575,11 +1186,9 @@ void Backend::inviteFriend(const QString &steamId) {
     return;
   }
   if (roomManager_ && roomManager_->getCurrentLobby().IsValid()) {
-    SteamMatchmaking()->InviteUserToLobby(roomManager_->getCurrentLobby(),
-                                          CSteamID(friendId));
+    SteamMatchmaking()->InviteUserToLobby(roomManager_->getCurrentLobby(), CSteamID(friendId));
     inviteCooldowns_[friendId] = 3;
-    inviteCooldownSeconds_ =
-        std::max(inviteCooldownSeconds_, inviteCooldowns_[friendId]);
+    inviteCooldownSeconds_ = std::max(inviteCooldownSeconds_, inviteCooldowns_[friendId]);
     emit inviteCooldownChanged();
     updateFriendCooldown(steamId, inviteCooldowns_[friendId]);
   } else {
@@ -1614,8 +1223,7 @@ void Backend::addFriend(const QString &steamId) {
     return;
   }
 
-  if (SteamFriends() &&
-      SteamFriends()->HasFriend(target, k_EFriendFlagImmediate)) {
+  if (SteamFriends() && SteamFriends()->HasFriend(target, k_EFriendFlagImmediate)) {
     qDebug() << "[Friends] addFriend already friend";
     qWarning() << tr("已经是好友了。");
     return;
@@ -1630,8 +1238,7 @@ void Backend::addFriend(const QString &steamId) {
   const bool overlayEnabled = SteamUtils() && SteamUtils()->IsOverlayEnabled();
   bool overlayInvoked = false;
   if (overlayEnabled) {
-    qDebug() << "[Friends] opening overlay friendadd"
-             << target.ConvertToUint64();
+    qDebug() << "[Friends] opening overlay friendadd" << target.ConvertToUint64();
     SteamFriends()->ActivateGameOverlayToUser("friendadd", target);
     overlayInvoked = true;
   } else {
@@ -1640,18 +1247,15 @@ void Backend::addFriend(const QString &steamId) {
 
   bool openedProfile = false;
   if (!overlayInvoked) {
-    const QUrl profileUrl(
-        QStringLiteral("https://steamcommunity.com/profiles/%1/").arg(steamId));
+    const QUrl profileUrl(QStringLiteral("https://steamcommunity.com/profiles/%1/").arg(steamId));
     openedProfile = QDesktopServices::openUrl(profileUrl);
-    qDebug() << "[Friends] fallback openUrl (profile)" << profileUrl
-             << "opened:" << openedProfile;
+    qDebug() << "[Friends] fallback openUrl (profile)" << profileUrl << "opened:" << openedProfile;
   }
 
   if (overlayInvoked) {
     qWarning() << tr("已尝试打开 Steam 添加好友窗口。");
   } else {
-    qWarning() << tr(
-        "已在浏览器中打开对方 Steam 个人主页，请在网页中添加好友。");
+    qWarning() << tr("已在浏览器中打开对方 Steam 个人主页，请在网页中添加好友。");
     if (openedProfile) {
       setStatusOverride(tr("正在打开 Steam 个人主页…"), 2000);
     }
@@ -1659,7 +1263,7 @@ void Backend::addFriend(const QString &steamId) {
 }
 
 void Backend::updateFriendCooldown(const QString &steamId, int seconds) {
-  const bool modelChanged = friendsModel_.setInviteCooldown(steamId, seconds);
+  friendsModel_.setInviteCooldown(steamId, seconds);
   bool listChanged = false;
   for (auto &entry : friends_) {
     QVariantMap map = entry.toMap();
@@ -1701,45 +1305,40 @@ void Backend::updateRelayPing() {
     const int popCount = SteamNetworkingUtils()->GetPOPCount();
     if (popCount > 0) {
       std::vector<SteamNetworkingPOPID> pops(popCount);
-      const int filled =
-          SteamNetworkingUtils()->GetPOPList(pops.data(), popCount);
+      const int filled = SteamNetworkingUtils()->GetPOPList(pops.data(), popCount);
       popList.reserve(std::max(0, filled));
       for (int i = 0; i < filled; ++i) {
         SteamNetworkingPOPID via = 0;
-        const int ping = SteamNetworkingUtils()->GetPingToDataCenter(
-            pops[static_cast<size_t>(i)], &via);
+        const int ping =
+            SteamNetworkingUtils()->GetPingToDataCenter(pops[static_cast<size_t>(i)], &via);
         const int roundTrip = ping >= 0 ? ping * 2 : -1;
         if (roundTrip >= 0 && (next < 0 || roundTrip < next)) {
           next = roundTrip;
         }
 
         QVariantMap entry;
-        entry.insert(QStringLiteral("name"),
-                     renderPopId(pops[static_cast<size_t>(i)]));
+        entry.insert(QStringLiteral("name"), renderPopId(pops[static_cast<size_t>(i)]));
         entry.insert(QStringLiteral("ping"), roundTrip);
         if (via != 0) {
           entry.insert(QStringLiteral("via"), renderPopId(via));
         }
         popList.push_back(entry);
       }
-      std::sort(popList.begin(), popList.end(),
-                [](const QVariant &a, const QVariant &b) {
-                  const QVariantMap am = a.toMap();
-                  const QVariantMap bm = b.toMap();
-                  int ap = am.value(QStringLiteral("ping"),
-                                    QVariant(std::numeric_limits<int>::max()))
-                               .toInt();
-                  int bp = bm.value(QStringLiteral("ping"),
-                                    QVariant(std::numeric_limits<int>::max()))
-                               .toInt();
-                  if (ap < 0) {
-                    ap = std::numeric_limits<int>::max();
-                  }
-                  if (bp < 0) {
-                    bp = std::numeric_limits<int>::max();
-                  }
-                  return ap < bp;
-                });
+      std::sort(popList.begin(), popList.end(), [](const QVariant &a, const QVariant &b) {
+        const QVariantMap am = a.toMap();
+        const QVariantMap bm = b.toMap();
+        int ap =
+            am.value(QStringLiteral("ping"), QVariant(std::numeric_limits<int>::max())).toInt();
+        int bp =
+            bm.value(QStringLiteral("ping"), QVariant(std::numeric_limits<int>::max())).toInt();
+        if (ap < 0) {
+          ap = std::numeric_limits<int>::max();
+        }
+        if (bp < 0) {
+          bp = std::numeric_limits<int>::max();
+        }
+        return ap < bp;
+      });
     }
   }
 
@@ -1782,9 +1381,7 @@ void Backend::sendChatMessage(const QString &text) {
   }
 }
 
-void Backend::pinChatMessage(const QString &steamId, const QString &displayName,
-                             const QString &avatar, const QString &message,
-                             const QDateTime &timestamp) {
+void Backend::pinChatMessage(int row) {
   if (!ensureSteamReady(tr("置顶消息"))) {
     return;
   }
@@ -1797,22 +1394,24 @@ void Backend::pinChatMessage(const QString &steamId, const QString &displayName,
     return;
   }
 
-  ChatModel::Entry entry;
-  entry.steamId = steamId;
-  entry.displayName = displayName.isEmpty() ? steamId : displayName;
-  entry.message = message.trimmed();
-  entry.avatar = avatar;
-  entry.timestamp =
-      timestamp.isValid() ? timestamp : QDateTime::currentDateTime();
+  auto selected = chatModel_.entryAt(row);
+  if (!selected) {
+    return;
+  }
+  ChatModel::Entry entry = std::move(*selected);
+  entry.displayName = entry.displayName.isEmpty() ? entry.steamId : entry.displayName;
+  entry.message = entry.message.trimmed();
+  if (!entry.timestamp.isValid()) {
+    entry.timestamp = QDateTime::currentDateTime();
+  }
   if (entry.message.isEmpty()) {
     return;
   }
 
   bool isSelfAuthor = false;
   if (steamReady_ && SteamUser()) {
-    const QString myId =
-        QString::number(SteamUser()->GetSteamID().ConvertToUint64());
-    isSelfAuthor = (steamId == myId);
+    const QString myId = QString::number(SteamUser()->GetSteamID().ConvertToUint64());
+    isSelfAuthor = (entry.steamId == myId);
   }
   entry = populatePinnedEntryAvatar(std::move(entry), isSelfAuthor);
   chatModel_.setPinnedMessage(entry);
@@ -1840,13 +1439,10 @@ void Backend::launchSteam(bool useSteamChina) {
 #ifdef Q_OS_WIN
   QString steamPath;
   {
-    QSettings steamReg("HKEY_CURRENT_USER\\Software\\Valve\\Steam",
-                       QSettings::NativeFormat);
-    const QString regPath =
-        steamReg.value(QStringLiteral("SteamPath")).toString();
+    QSettings steamReg("HKEY_CURRENT_USER\\Software\\Valve\\Steam", QSettings::NativeFormat);
+    const QString regPath = steamReg.value(QStringLiteral("SteamPath")).toString();
     if (!regPath.isEmpty()) {
-      const QString candidate =
-          QDir(regPath).filePath(QStringLiteral("steam.exe"));
+      const QString candidate = QDir(regPath).filePath(QStringLiteral("steam.exe"));
       if (QFileInfo::exists(candidate)) {
         steamPath = candidate;
       }
@@ -1857,8 +1453,7 @@ void Backend::launchSteam(bool useSteamChina) {
     if (!steamPath.isEmpty() || base.isEmpty()) {
       return;
     }
-    const QString candidate =
-        QDir(base).filePath(QStringLiteral("Steam/steam.exe"));
+    const QString candidate = QDir(base).filePath(QStringLiteral("Steam/steam.exe"));
     if (QFileInfo::exists(candidate)) {
       steamPath = candidate;
     }
@@ -1882,8 +1477,7 @@ void Backend::launchSteam(bool useSteamChina) {
     return;
   }
 
-  setStatusOverride(useSteamChina ? tr("尝试以蒸汽平台启动 Steam…")
-                                  : tr("尝试以国际版启动 Steam…"),
+  setStatusOverride(useSteamChina ? tr("尝试以蒸汽平台启动 Steam…") : tr("尝试以国际版启动 Steam…"),
                     3000);
 #else
   Q_UNUSED(useSteamChina);
@@ -1941,17 +1535,14 @@ void Backend::handlePinnedMessageMetadata(const QString &payload) {
   }
   bool isSelfAuthor = false;
   if (steamReady_ && SteamUser()) {
-    const QString myId =
-        QString::number(SteamUser()->GetSteamID().ConvertToUint64());
+    const QString myId = QString::number(SteamUser()->GetSteamID().ConvertToUint64());
     isSelfAuthor = (parsed->steamId == myId);
   }
-  ChatModel::Entry entry =
-      populatePinnedEntryAvatar(std::move(*parsed), isSelfAuthor);
+  ChatModel::Entry entry = populatePinnedEntryAvatar(std::move(*parsed), isSelfAuthor);
   chatModel_.setPinnedMessage(entry);
 }
 
-std::optional<ChatModel::Entry>
-Backend::parsePinnedMessagePayload(const QString &payload) const {
+std::optional<ChatModel::Entry> Backend::parsePinnedMessagePayload(const QString &payload) const {
   QJsonParseError error{};
   const QJsonDocument doc = QJsonDocument::fromJson(payload.toUtf8(), &error);
   if (error.error != QJsonParseError::NoError || !doc.isObject()) {
@@ -1990,16 +1581,14 @@ QString Backend::serializePinnedMessage(const ChatModel::Entry &entry) const {
   obj.insert(QStringLiteral("steamId"), entry.steamId);
   obj.insert(QStringLiteral("displayName"), entry.displayName);
   obj.insert(QStringLiteral("message"), entry.message);
-  const QDateTime ts = entry.timestamp.isValid()
-                           ? entry.timestamp.toUTC()
-                           : QDateTime::currentDateTimeUtc();
+  const QDateTime ts =
+      entry.timestamp.isValid() ? entry.timestamp.toUTC() : QDateTime::currentDateTimeUtc();
   obj.insert(QStringLiteral("timestamp"), ts.toString(Qt::ISODateWithMs));
   const QJsonDocument doc(obj);
   return QString::fromUtf8(doc.toJson(QJsonDocument::Compact));
 }
 
-ChatModel::Entry Backend::populatePinnedEntryAvatar(ChatModel::Entry entry,
-                                                    bool isSelfAuthor) {
+ChatModel::Entry Backend::populatePinnedEntryAvatar(ChatModel::Entry entry, bool isSelfAuthor) {
   entry.isSelf = isSelfAuthor;
   bool ok = false;
   const uint64_t id = entry.steamId.toULongLong(&ok);
@@ -2133,20 +1722,17 @@ void Backend::clearStatusOverride() {
   updateStatus();
 }
 
-void Backend::updateLobbiesList(
-    const std::vector<SteamRoomManager::LobbyInfo> &lobbies) {
+void Backend::updateLobbiesList(const std::vector<SteamRoomManager::LobbyInfo> &lobbies) {
   std::vector<LobbiesModel::Entry> entries;
   entries.reserve(lobbies.size());
 
   const QString currentLobbyId = lobbyId();
   const bool iAmHost = isHost();
-  const QString myIdString =
-      (steamReady_ && SteamUser())
-          ? QString::number(SteamUser()->GetSteamID().ConvertToUint64())
-          : QString();
+  const QString myIdString = (steamReady_ && SteamUser())
+                                 ? QString::number(SteamUser()->GetSteamID().ConvertToUint64())
+                                 : QString();
   const int currentMemberCount =
-      roomManager_ ? static_cast<int>(roomManager_->getLobbyMembers().size())
-                   : 0;
+      roomManager_ ? static_cast<int>(roomManager_->getLobbyMembers().size()) : 0;
 
   for (const auto &lobby : lobbies) {
     LobbiesModel::Entry entry;
@@ -2155,8 +1741,7 @@ void Backend::updateLobbiesList(
     if (entry.name.trimmed().isEmpty()) {
       QString hostDisplay = QString::fromStdString(lobby.ownerName);
       if (hostDisplay.isEmpty() && lobby.ownerId.IsValid() && SteamFriends()) {
-        const char *ownerName =
-            SteamFriends()->GetFriendPersonaName(lobby.ownerId);
+        const char *ownerName = SteamFriends()->GetFriendPersonaName(lobby.ownerId);
         if (ownerName && ownerName[0] != '\0') {
           hostDisplay = QString::fromUtf8(ownerName);
         }
@@ -2172,8 +1757,7 @@ void Backend::updateLobbiesList(
     }
     entry.hostName = QString::fromStdString(lobby.ownerName);
     if (entry.hostName.isEmpty() && lobby.ownerId.IsValid() && SteamFriends()) {
-      const char *ownerName =
-          SteamFriends()->GetFriendPersonaName(lobby.ownerId);
+      const char *ownerName = SteamFriends()->GetFriendPersonaName(lobby.ownerId);
       if (ownerName) {
         entry.hostName = QString::fromUtf8(ownerName);
       }
@@ -2181,8 +1765,7 @@ void Backend::updateLobbiesList(
     entry.memberCount = lobby.memberCount;
     entry.ping = lobby.pingMs >= 0 ? lobby.pingMs : -1;
 
-    if (!currentLobbyId.isEmpty() && entry.lobbyId == currentLobbyId &&
-        currentMemberCount > 0) {
+    if (!currentLobbyId.isEmpty() && entry.lobbyId == currentLobbyId && currentMemberCount > 0) {
       entry.memberCount = std::max(entry.memberCount, currentMemberCount);
     }
 
@@ -2253,12 +1836,10 @@ void Backend::updateMembersList() {
 
       MembersModel::Entry entry;
       entry.isFriend =
-          (SteamFriends() &&
-           SteamFriends()->HasFriend(memberId, k_EFriendFlagImmediate)) ||
+          (SteamFriends() && SteamFriends()->HasFriend(memberId, k_EFriendFlagImmediate)) ||
           (SteamUser() && memberId == myId);
       entry.steamId = QString::number(memberValue);
-      entry.displayName =
-          QString::fromUtf8(SteamFriends()->GetFriendPersonaName(memberId));
+      entry.displayName = QString::fromUtf8(SteamFriends()->GetFriendPersonaName(memberId));
       entry.avatar = avatarForSteamId(memberId);
       entry.ping = -1;
       entry.relay = QStringLiteral("-");
@@ -2268,13 +1849,11 @@ void Backend::updateMembersList() {
         entry.relay = vpnHosting_ ? tr("房主") : tr("本机");
       } else if (vpnManager_) {
         entry.ping = vpnManager_->getPeerPing(memberId);
-        entry.relay = QString::fromStdString(
-            vpnManager_->getPeerConnectionType(memberId));
+        entry.relay = QString::fromStdString(vpnManager_->getPeerConnectionType(memberId));
       }
       auto itIp = ipBySteam.find(memberValue);
       if (itIp != ipBySteam.end()) {
-        entry.ip =
-            QString::fromStdString(SteamVpnBridge::ipToString(itIp->second));
+        entry.ip = QString::fromStdString(SteamVpnBridge::ipToString(itIp->second));
       }
       entries.push_back(std::move(entry));
     }
@@ -2284,8 +1863,7 @@ void Backend::updateMembersList() {
       lastMemberLogCount_ = newCount;
       qDebug() << "[Members] updated count:" << newCount;
       for (const auto &entry : entries) {
-        qDebug() << "   member" << entry.displayName << "(" << entry.steamId
-                 << ")";
+        qDebug() << "   member" << entry.displayName << "(" << entry.steamId << ")";
       }
     }
     membersModel_.setMembers(std::move(entries));
@@ -2329,13 +1907,11 @@ void Backend::updateMembersList() {
 
     MembersModel::Entry entry;
     entry.isFriend =
-        (SteamFriends() &&
-         SteamFriends()->HasFriend(memberId, k_EFriendFlagImmediate)) ||
+        (SteamFriends() && SteamFriends()->HasFriend(memberId, k_EFriendFlagImmediate)) ||
         (SteamUser() && memberId == myId);
     entry.isSelf = (SteamUser() && memberId == myId);
     entry.steamId = QString::number(memberValue);
-    entry.displayName =
-        QString::fromUtf8(SteamFriends()->GetFriendPersonaName(memberId));
+    entry.displayName = QString::fromUtf8(SteamFriends()->GetFriendPersonaName(memberId));
     entry.avatar = avatarForSteamId(memberId);
     entry.relay = QStringLiteral("-");
     entry.ping = -1;
@@ -2350,16 +1926,14 @@ void Backend::updateMembersList() {
         int rp = -1;
         std::string relayInfo;
         const bool hasBroadcast =
-            roomManager_ && roomManager_->getRemotePing(myId, rp, relayInfo) &&
-            rp >= 0;
+            roomManager_ && roomManager_->getRemotePing(myId, rp, relayInfo) && rp >= 0;
         if (hasBroadcast && rp > 1) {
           entry.ping = rp;
           if (!relayInfo.empty()) {
             entry.relay = QString::fromStdString(relayInfo);
           }
         } else {
-          const int fallbackPing =
-              steamManager_ ? steamManager_->getHostPing() : -1;
+          const int fallbackPing = steamManager_ ? steamManager_->getHostPing() : -1;
           entry.ping = fallbackPing > 1 ? fallbackPing : -1;
         }
         if (entry.ping >= 0 && entry.ping < 2) {
@@ -2368,8 +1942,7 @@ void Backend::updateMembersList() {
       } else if (!isHost()) {
         int rp = -1;
         std::string relayInfo;
-        if (roomManager_ &&
-            roomManager_->getRemotePing(memberId, rp, relayInfo) && rp >= 0) {
+        if (roomManager_ && roomManager_->getRemotePing(memberId, rp, relayInfo) && rp >= 0) {
           entry.ping = rp;
           entry.relay = QString::fromStdString(relayInfo);
         }
@@ -2377,8 +1950,8 @@ void Backend::updateMembersList() {
         std::lock_guard<std::mutex> lock(steamManager_->getConnectionsMutex());
         for (const auto &conn : steamManager_->getConnections()) {
           SteamNetConnectionRealTimeStatus_t status{};
-          if (steamManager_->getInterface()->GetConnectionRealTimeStatus(
-                  conn, &status, 0, nullptr) != k_EResultOK ||
+          if (steamManager_->getInterface()->GetConnectionRealTimeStatus(conn, &status, 0,
+                                                                         nullptr) != k_EResultOK ||
               status.m_eState != k_ESteamNetworkingConnectionState_Connected) {
             continue; // Transport not ready; skip to avoid ICE asserts.
           }
@@ -2387,11 +1960,9 @@ void Backend::updateMembersList() {
           if (steamManager_->getInterface()->GetConnectionInfo(conn, &info) &&
               info.m_identityRemote.GetSteamID() == memberId) {
             entry.ping = steamManager_->getConnectionPing(conn);
-            entry.relay = QString::fromStdString(
-                steamManager_->getConnectionRelayInfo(conn));
+            entry.relay = QString::fromStdString(steamManager_->getConnectionRelayInfo(conn));
             if (entry.ping >= 0) {
-              pingBroadcast.emplace_back(memberValue, entry.ping,
-                                         entry.relay.toStdString());
+              pingBroadcast.emplace_back(memberValue, entry.ping, entry.relay.toStdString());
             }
             break;
           }
@@ -2406,8 +1977,8 @@ void Backend::updateMembersList() {
     std::lock_guard<std::mutex> lock(steamManager_->getConnectionsMutex());
     for (const auto &conn : steamManager_->getConnections()) {
       SteamNetConnectionRealTimeStatus_t status{};
-      if (steamManager_->getInterface()->GetConnectionRealTimeStatus(
-              conn, &status, 0, nullptr) != k_EResultOK ||
+      if (steamManager_->getInterface()->GetConnectionRealTimeStatus(conn, &status, 0, nullptr) !=
+              k_EResultOK ||
           status.m_eState != k_ESteamNetworkingConnectionState_Connected) {
         continue; // Still negotiating; skip to avoid noisy asserts.
       }
@@ -2427,18 +1998,15 @@ void Backend::updateMembersList() {
 
       MembersModel::Entry entry;
       entry.isFriend =
-          (SteamFriends() &&
-           SteamFriends()->HasFriend(remoteId, k_EFriendFlagImmediate)) ||
+          (SteamFriends() && SteamFriends()->HasFriend(remoteId, k_EFriendFlagImmediate)) ||
           (SteamUser() && remoteId == myId);
       entry.isSelf = (SteamUser() && remoteId == myId);
       entry.steamId = QString::number(remoteValue);
-      entry.displayName =
-          QString::fromUtf8(SteamFriends()->GetFriendPersonaName(remoteId));
+      entry.displayName = QString::fromUtf8(SteamFriends()->GetFriendPersonaName(remoteId));
       entry.avatar = avatarForSteamId(remoteId);
       entry.ping = steamManager_->getConnectionPing(conn);
       const std::string relayInfo = steamManager_->getConnectionRelayInfo(conn);
-      entry.relay =
-          relayInfo.empty() ? tr("P2P") : QString::fromStdString(relayInfo);
+      entry.relay = relayInfo.empty() ? tr("P2P") : QString::fromStdString(relayInfo);
       if (entry.ping >= 0) {
         pingBroadcast.emplace_back(remoteValue, entry.ping, relayInfo);
       }
@@ -2461,8 +2029,7 @@ void Backend::updateMembersList() {
     lastMemberLogCount_ = newCount;
     qDebug() << "[Members] updated count:" << newCount;
     for (const auto &entry : entries) {
-      qDebug() << "   member" << entry.displayName << "(" << entry.steamId
-               << ")";
+      qDebug() << "   member" << entry.displayName << "(" << entry.steamId << ")";
     }
   }
 
@@ -2514,342 +2081,8 @@ void Backend::updateLobbyInfoSignals() {
   }
 }
 
-void Backend::checkForUpdates(bool useProxy) {
-  if (checkingUpdate_) {
-    return;
-  }
-  resetUpdateCheck();
-  updateStatusText_ = tr("正在检查更新…");
-  checkingUpdate_ = true;
-  emit updateInfoChanged();
-
-  const QString apiUrl = QStringLiteral(
-      "https://api.github.com/repos/moeleak/connecttool-qt/releases/latest");
-  const QString reqUrl =
-      useProxy ? QStringLiteral("https://gh-proxy.org/") + apiUrl : apiUrl;
-
-  const QUrl url(reqUrl);
-  QNetworkRequest req{url};
-  req.setHeader(QNetworkRequest::UserAgentHeader,
-                QStringLiteral("connecttool-qt"));
-  currentUpdateReply_ = networkManager_.get(req);
-
-  connect(currentUpdateReply_, &QNetworkReply::finished, this,
-          &Backend::handleUpdateReply);
-}
+void Backend::checkForUpdates(bool useProxy) { updateController_.check(useProxy); }
 
 void Backend::downloadUpdate(bool useProxy, const QString &targetPath) {
-  if (downloadingUpdate_) {
-    return;
-  }
-  if (latestDownloadUrl_.isEmpty()) {
-    updateStatusText_ = tr("没有可用的下载链接，请先检查更新。");
-    emit updateInfoChanged();
-    return;
-  }
-  QString pathInput = targetPath.trimmed();
-
-  // Accept both raw file paths and file:// URLs (e.g. file:///C:/path/on/windows)
-  const QUrl parsed = QUrl::fromUserInput(pathInput);
-  if (parsed.isLocalFile()) {
-    const QString local = parsed.toLocalFile();
-    if (!local.isEmpty()) {
-      pathInput = local;
-    }
-  }
-
-#ifdef Q_OS_WIN
-  // File URLs sliced in QML may come through as "/C:/path"; drop the leading
-  // slash so QDir treats it as a proper drive path.
-  if (pathInput.startsWith('/') && pathInput.size() > 2 &&
-      pathInput[1].isLetter() && pathInput[2] == QLatin1Char(':')) {
-    pathInput.remove(0, 1);
-  }
-#endif
-
-  pathInput = QDir::fromNativeSeparators(pathInput);
-  if (pathInput.isEmpty()) {
-    updateStatusText_ = tr("请选择下载目录。");
-    emit updateInfoChanged();
-    return;
-  }
-  QString chosenDir;
-  QString chosenFileName;
-  const QFileInfo fi(pathInput);
-  const bool endsWithSlash =
-      pathInput.endsWith('/') || pathInput.endsWith('\\');
-  if (!endsWithSlash && (!fi.exists() || fi.isFile())) {
-    chosenDir = fi.dir().absolutePath();
-    chosenFileName = fi.fileName();
-  }
-  if (chosenDir.isEmpty()) {
-    chosenDir = fi.absoluteFilePath();
-  }
-  if (chosenFileName.isEmpty()) {
-    chosenFileName = fi.fileName();
-  }
-
-  QDir dir(chosenDir);
-  if (!dir.exists() && !dir.mkpath(QStringLiteral("."))) {
-    updateStatusText_ = tr("无法创建下载目录：%1").arg(chosenDir);
-    emit updateInfoChanged();
-    return;
-  }
-
-  const QString urlStr = preferredDownloadUrl(useProxy);
-  if (urlStr.isEmpty()) {
-    updateStatusText_ = tr("下载链接无效。");
-    emit updateInfoChanged();
-    return;
-  }
-
-  resetDownloadState();
-  downloadTargetDir_ = dir.absolutePath();
-  downloadTargetRequested_ = pathInput;
-  downloadingUpdate_ = true;
-  downloadProgress_ = 0.0;
-  downloadSavedPath_.clear();
-  updateStatusText_ = tr("正在下载更新…");
-  emit updateInfoChanged();
-  emit updateDownloadChanged();
-
-  QNetworkRequest req{QUrl(urlStr)};
-  req.setHeader(QNetworkRequest::UserAgentHeader,
-                QStringLiteral("connecttool-qt"));
-  currentDownloadReply_ = networkManager_.get(req);
-
-  connect(currentDownloadReply_, &QNetworkReply::downloadProgress, this,
-          [this](qint64 received, qint64 total) {
-            if (total > 0) {
-              downloadProgress_ =
-                  static_cast<double>(received) / static_cast<double>(total);
-            } else {
-              downloadProgress_ = 0.0;
-            }
-            emit updateDownloadChanged();
-          });
-  connect(currentDownloadReply_, &QNetworkReply::finished, this,
-          &Backend::handleDownloadFinished);
-}
-
-void Backend::handleUpdateReply() {
-  checkingUpdate_ = false;
-  QPointer<QNetworkReply> reply = currentUpdateReply_;
-  currentUpdateReply_.clear();
-
-  if (!reply) {
-    updateStatusText_ = tr("检查失败。");
-    updateAvailable_ = false;
-    latestDownloadUrl_.clear();
-    latestReleasePage_.clear();
-    emit updateInfoChanged();
-    return;
-  }
-
-  const QByteArray payload = reply->readAll();
-  const QNetworkReply::NetworkError error = reply->error();
-  reply->deleteLater();
-  if (error != QNetworkReply::NoError) {
-    updateStatusText_ = tr("检查失败：%1").arg(reply->errorString());
-    updateAvailable_ = false;
-    latestDownloadUrl_.clear();
-    latestReleasePage_.clear();
-    emit updateInfoChanged();
-    return;
-  }
-
-  QJsonParseError parseError{};
-  const QJsonDocument doc = QJsonDocument::fromJson(payload, &parseError);
-  if (parseError.error != QJsonParseError::NoError || !doc.isObject()) {
-    updateStatusText_ = tr("更新信息解析失败。");
-    updateAvailable_ = false;
-    latestDownloadUrl_.clear();
-    latestReleasePage_.clear();
-    emit updateInfoChanged();
-    return;
-  }
-
-  const QJsonObject obj = doc.object();
-  const QString tag = obj.value(QStringLiteral("tag_name")).toString();
-  latestReleasePage_ =
-      stripGhProxyPrefix(obj.value(QStringLiteral("html_url")).toString());
-  const QJsonArray assets = obj.value(QStringLiteral("assets")).toArray();
-  QString assetUrl;
-  for (const auto &assetVal : assets) {
-    if (!assetVal.isObject()) {
-      continue;
-    }
-    const QJsonObject assetObj = assetVal.toObject();
-    const QString browserUrl = stripGhProxyPrefix(
-        assetObj.value(QStringLiteral("browser_download_url")).toString());
-    if (!browserUrl.isEmpty()) {
-      assetUrl = browserUrl;
-      break;
-    }
-  }
-
-  latestVersion_ =
-      normalizeVersion(tag.isEmpty() ? QStringLiteral("0.0.0") : tag);
-  latestDownloadUrl_ = assetUrl;
-  updateAvailable_ =
-      isVersionNewer(latestVersion_, normalizeVersion(appVersion_));
-
-  if (updateAvailable_) {
-    if (!latestDownloadUrl_.isEmpty()) {
-      updateStatusText_ = tr("发现新版本 %1，可下载更新。").arg(latestVersion_);
-    } else {
-      updateStatusText_ =
-          tr("发现新版本 %1，暂未找到下载链接。").arg(latestVersion_);
-    }
-  } else {
-    updateStatusText_ = tr("当前已是最新版本（%1）。").arg(appVersion_);
-  }
-  emit updateInfoChanged();
-}
-
-void Backend::handleDownloadFinished() {
-  QPointer<QNetworkReply> reply = currentDownloadReply_;
-  currentDownloadReply_.clear();
-  downloadingUpdate_ = false;
-
-  if (!reply) {
-    updateStatusText_ = tr("下载已取消。");
-    emit updateInfoChanged();
-    emit updateDownloadChanged();
-    return;
-  }
-
-  const QNetworkReply::NetworkError err = reply->error();
-  const QByteArray data = reply->readAll();
-  const QUrl finalUrl = reply->url();
-  reply->deleteLater();
-
-  if (err != QNetworkReply::NoError) {
-    updateStatusText_ = tr("下载失败：%1").arg(reply->errorString());
-    emit updateInfoChanged();
-    emit updateDownloadChanged();
-    return;
-  }
-
-  QFileInfo requested(downloadTargetRequested_.isEmpty()
-                          ? downloadTargetDir_
-                          : downloadTargetRequested_);
-  QString fileName = QFileInfo(finalUrl.path()).fileName();
-  if (fileName.isEmpty()) {
-    fileName =
-        latestVersion_.isEmpty()
-            ? QStringLiteral("connecttool-qt-release.bin")
-            : QStringLiteral("connecttool-qt-%1.zip").arg(latestVersion_);
-  }
-
-  QString targetDir = downloadTargetDir_;
-  if (targetDir.isEmpty()) {
-    targetDir =
-        QStandardPaths::writableLocation(QStandardPaths::DownloadLocation);
-  }
-
-  // If user specified a filename in the requested path, prefer it.
-  if (requested.exists() && requested.isFile()) {
-    targetDir = requested.dir().absolutePath();
-    fileName = requested.fileName();
-  } else if (!requested.exists() && !requested.fileName().isEmpty() &&
-             !downloadTargetDir_.endsWith('/') &&
-             !downloadTargetDir_.endsWith('\\')) {
-    targetDir = requested.dir().absolutePath();
-    fileName = requested.fileName();
-  }
-  if (!fileName.contains('.')) {
-    fileName.append(QStringLiteral(".zip"));
-  }
-
-  const QString targetPath = QDir(targetDir).filePath(fileName);
-  QSaveFile file(targetPath);
-  if (!file.open(QIODevice::WriteOnly)) {
-    updateStatusText_ = tr("保存文件失败：%1").arg(file.errorString());
-    emit updateInfoChanged();
-    emit updateDownloadChanged();
-    return;
-  }
-  if (file.write(data) != data.size() || !file.commit()) {
-    updateStatusText_ = tr("保存文件失败：%1").arg(file.errorString());
-    emit updateInfoChanged();
-    emit updateDownloadChanged();
-    return;
-  }
-
-  downloadProgress_ = 1.0;
-  downloadSavedPath_ = targetPath;
-  updateStatusText_ = tr("已下载到 %1").arg(downloadSavedPath_);
-  emit updateInfoChanged();
-  emit updateDownloadChanged();
-}
-
-void Backend::resetUpdateCheck() {
-  if (currentUpdateReply_) {
-    currentUpdateReply_->disconnect(this);
-    currentUpdateReply_->deleteLater();
-    currentUpdateReply_.clear();
-  }
-  checkingUpdate_ = false;
-}
-
-void Backend::resetDownloadState() {
-  if (currentDownloadReply_) {
-    currentDownloadReply_->disconnect(this);
-    currentDownloadReply_->deleteLater();
-    currentDownloadReply_.clear();
-  }
-  downloadingUpdate_ = false;
-  downloadProgress_ = 0.0;
-  downloadSavedPath_.clear();
-  downloadTargetDir_.clear();
-  downloadTargetRequested_.clear();
-}
-
-bool Backend::isVersionNewer(const QString &candidate,
-                             const QString &current) const {
-  const auto parse = [](const QString &v) {
-    QStringList parts = v.split('.');
-    while (parts.size() < 3) {
-      parts.append(QStringLiteral("0"));
-    }
-    std::array<int, 3> vals{0, 0, 0};
-    for (int i = 0; i < 3 && i < parts.size(); ++i) {
-      bool ok = false;
-      vals[static_cast<size_t>(i)] = parts[i].toInt(&ok);
-      if (!ok) {
-        vals[static_cast<size_t>(i)] = 0;
-      }
-    }
-    return vals;
-  };
-
-  const auto a = parse(candidate);
-  const auto b = parse(current);
-  if (a[0] != b[0]) {
-    return a[0] > b[0];
-  }
-  if (a[1] != b[1]) {
-    return a[1] > b[1];
-  }
-  return a[2] > b[2];
-}
-
-QString Backend::normalizeVersion(const QString &input) const {
-  QString v = input.trimmed();
-  if (v.startsWith('v') || v.startsWith('V')) {
-    v = v.mid(1);
-  }
-  return v.isEmpty() ? QStringLiteral("0.0.0") : v;
-}
-
-QString Backend::preferredDownloadUrl(bool useProxy) const {
-  if (latestDownloadUrl_.isEmpty()) {
-    return {};
-  }
-  const QString baseUrl = stripGhProxyPrefix(latestDownloadUrl_);
-  if (!useProxy) {
-    return baseUrl;
-  }
-  return QStringLiteral("https://gh-proxy.org/%1").arg(baseUrl);
+  updateController_.download(useProxy, targetPath);
 }

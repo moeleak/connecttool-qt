@@ -4,11 +4,13 @@
 #include <QDateTime>
 #include <QString>
 #include <QVariantMap>
+#include <QtQmlIntegration/qqmlintegration.h>
 #include <optional>
 #include <vector>
 
 class ChatModel : public QAbstractListModel {
   Q_OBJECT
+  QML_ANONYMOUS
   Q_PROPERTY(int count READ count NOTIFY countChanged)
   Q_PROPERTY(bool hasPinned READ hasPinned NOTIFY pinnedChanged)
   Q_PROPERTY(QVariantMap pinnedMessage READ pinnedMessage NOTIFY pinnedChanged)
@@ -37,14 +39,14 @@ public:
   explicit ChatModel(QObject *parent = nullptr);
 
   int rowCount(const QModelIndex &parent = QModelIndex()) const override;
-  QVariant data(const QModelIndex &index,
-                int role = Qt::DisplayRole) const override;
+  QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
   QHash<int, QByteArray> roleNames() const override;
 
   void appendMessage(Entry entry);
   void clear();
   void setPinnedMessage(const Entry &entry);
   void clearPinnedMessage();
+  [[nodiscard]] std::optional<Entry> entryAt(int row) const;
 
   int count() const { return static_cast<int>(entries_.size()); }
   bool hasPinned() const { return pinnedEntry_.has_value(); }

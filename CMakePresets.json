@@ -1,0 +1,61 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 28,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_CXX_STANDARD": "23",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "dev",
+      "inherits": "base",
+      "displayName": "Developer build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CONNECTTOOL_BUILD_APPLICATION": "ON"
+      }
+    },
+    {
+      "name": "core-tests",
+      "inherits": "base",
+      "displayName": "Core tests without Steamworks",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CONNECTTOOL_BUILD_APPLICATION": "OFF"
+      }
+    },
+    {
+      "name": "release",
+      "inherits": "base",
+      "displayName": "Release build",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CONNECTTOOL_BUILD_APPLICATION": "ON",
+        "CONNECTTOOL_BUILD_BENCHMARKS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "dev", "configurePreset": "dev" },
+    { "name": "core-tests", "configurePreset": "core-tests" },
+    { "name": "release", "configurePreset": "release" }
+  ],
+  "testPresets": [
+    {
+      "name": "core-tests",
+      "configurePreset": "core-tests",
+      "output": { "outputOnFailure": true }
+    }
+  ]
+}

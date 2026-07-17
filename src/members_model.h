@@ -2,10 +2,12 @@
 
 #include <QAbstractListModel>
 #include <QString>
+#include <QtQmlIntegration/qqmlintegration.h>
 #include <vector>
 
 class MembersModel : public QAbstractListModel {
   Q_OBJECT
+  QML_ANONYMOUS
   Q_PROPERTY(int count READ count NOTIFY countChanged)
 
 public:
@@ -34,8 +36,7 @@ public:
   explicit MembersModel(QObject *parent = nullptr);
 
   int rowCount(const QModelIndex &parent = QModelIndex()) const override;
-  QVariant data(const QModelIndex &index,
-                int role = Qt::DisplayRole) const override;
+  QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
   QHash<int, QByteArray> roleNames() const override;
 
   void setMembers(std::vector<Entry> entries);

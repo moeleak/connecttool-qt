@@ -2,18 +2,20 @@
 
 #include <QAbstractListModel>
 #include <QString>
-#include <vector>
+#include <QtQmlIntegration/qqmlintegration.h>
 #include <algorithm>
+#include <vector>
 
 class LobbiesModel : public QAbstractListModel {
   Q_OBJECT
+  QML_ANONYMOUS
   Q_PROPERTY(int count READ count NOTIFY countChanged)
   Q_PROPERTY(QString filter READ filter WRITE setFilter NOTIFY filterChanged)
-  Q_PROPERTY(int sortMode READ sortMode WRITE setSortMode NOTIFY
-                     sortModeChanged)
+  Q_PROPERTY(int sortMode READ sortMode WRITE setSortMode NOTIFY sortModeChanged)
 
 public:
-  enum SortMode { SortByMembers = 0, SortByName = 1 };
+  // Keep the 1.5.x values stable; the ping mode is an additive UI feature.
+  enum SortMode { SortByMembers = 0, SortByName = 1, SortByPing = 2 };
 
   enum Roles {
     LobbyIdRole = Qt::UserRole + 1,
@@ -36,8 +38,7 @@ public:
   explicit LobbiesModel(QObject *parent = nullptr);
 
   int rowCount(const QModelIndex &parent = QModelIndex()) const override;
-  QVariant data(const QModelIndex &index,
-                int role = Qt::DisplayRole) const override;
+  QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
   QHash<int, QByteArray> roleNames() const override;
 
   void setLobbies(std::vector<Entry> list);

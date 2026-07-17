@@ -1,9 +1,62 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.28)
 project(ConnectToolQt LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Qml Quick QuickControls2 Network)
+set(CMAKE_CXX_EXTENSIONS OFF)
+# No target currently uses C++ modules. CMake otherwise enables dependency
+# scanning for C++23, and clang-scan-deps loses Nix's libc++ include paths on
+# Darwin because it bypasses part of the compiler wrapper.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+
+option(CONNECTTOOL_BUILD_APPLICATION "Build the ConnectTool desktop application" ON)
+option(CONNECTTOOL_BUILD_BENCHMARKS "Build repeatable protocol microbenchmarks" OFF)
+option(CONNECTTOOL_ENABLE_STRICT_WARNINGS "Enable strict warnings for first-party code" ON)
+option(CONNECTTOOL_ADHOC_SIGN_MACOS
+    "Ad-hoc sign the development app after install_name_tool changes" ON)
+
+include(CTest)
+
+find_package(Qt6 6.11.1 REQUIRED COMPONENTS Core Network)
+qt_standard_project_setup()
+
+add_library(connecttool_protocol STATIC
+    net/multiplex_protocol.cpp)
+target_include_directories(connecttool_protocol PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_features(connecttool_protocol PUBLIC cxx_std_23)
+
+if(CONNECTTOOL_BUILD_BENCHMARKS)
+    add_executable(connecttool_protocol_benchmark
+        benchmarks/protocol_benchmark.cpp)
+    target_link_libraries(connecttool_protocol_benchmark PRIVATE
+        connecttool_protocol)
+    target_compile_features(connecttool_protocol_benchmark PRIVATE cxx_std_23)
+endif()
+
+if(CONNECTTOOL_ENABLE_STRICT_WARNINGS)
+    if(MSVC)
+        target_compile_options(connecttool_protocol PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(connecttool_protocol PRIVATE
+            -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
+    endif()
+endif()
+
+add_library(connecttool_update STATIC
+    src/update_controller.cpp)
+target_include_directories(connecttool_update PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_features(connecttool_update PUBLIC cxx_std_23)
+target_link_libraries(connecttool_update PUBLIC Qt6::Core Qt6::Network)
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
+
+if(NOT CONNECTTOOL_BUILD_APPLICATION)
+    return()
+endif()
+
+find_package(Qt6 6.11.1 REQUIRED COMPONENTS Gui Qml Quick QuickControls2 Network)
 
 # Read version from git tag if available
 set(CONNECTTOOL_VERSION "1.5.15")
@@ -23,7 +76,6 @@ if(NOT Boost_FOUND)
 endif()
 find_package(Threads REQUIRED)
 
-qt_standard_project_setup()
 qt_policy(SET QTP0004 NEW)
 qt_policy(SET QTP0001 NEW)
 
@@ -97,10 +149,17 @@ endif()
 
 add_executable(connecttool-qt
     src/main.cpp
+    src/application_controller.h
+    src/application_controller.cpp
+    src/platform_environment.cpp
     src/backend.cpp
+    src/lobbies_model.h
     src/lobbies_model.cpp
+    src/friends_model.h
     src/friends_model.cpp
+    src/chat_model.h
     src/chat_model.cpp
+    src/members_model.h
     src/members_model.cpp
     src/sound_notifier.cpp
     net/multiplex_manager.cpp
@@ -158,7 +217,8 @@ target_include_directories(connecttool-qt PRIVATE
     src
     net
     steam
-    tun
+    tun)
+target_include_directories(connecttool-qt SYSTEM PRIVATE
     third_party
     ${STEAMWORKS_INCLUDE_DIR})
 
@@ -181,6 +241,8 @@ if(NOT TARGET Boost::headers)
 endif()
 
 target_link_libraries(connecttool-qt PRIVATE
+    connecttool_protocol
+    connecttool_update
     Qt6::Core
     Qt6::Gui
     Qt6::Qml
@@ -245,6 +307,14 @@ if(APPLE)
                     "@loader_path/../Frameworks/libsteamwebrtc.dylib"
                     "${_steamworks_bundle_frameworks}/libsteamwebrtc.dylib")
     endif()
+    if(CONNECTTOOL_ADHOC_SIGN_MACOS)
+        # install_name_tool invalidates Mach-O signatures.  Re-sign the whole
+        # development bundle so current macOS versions do not kill it in dyld.
+        # A distribution identity can safely replace this signature later.
+        add_custom_command(TARGET connecttool-qt POST_BUILD
+            COMMAND /usr/bin/codesign --force --deep --sign -
+                    "$<TARGET_BUNDLE_DIR:connecttool-qt>")
+    endif()
 else()
     add_custom_command(TARGET connecttool-qt POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -267,11 +337,22 @@ elseif(WIN32)
         BUILD_RPATH "$ORIGIN")
 endif()
 
+set_source_files_properties(qml/ConnectTool/Theme.qml
+    PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
+
 qt_add_qml_module(connecttool-qt
     URI ConnectTool
     VERSION 1.0
     QML_FILES
         qml/ConnectTool/Main.qml
+        qml/ConnectTool/Theme.qml
+        qml/ConnectTool/AppCard.qml
+        qml/ConnectTool/StatusPill.qml
+        qml/ConnectTool/Avatar.qml
+        qml/ConnectTool/RoomPage.qml
+        qml/ConnectTool/LobbyPage.qml
+        qml/ConnectTool/NetworkPage.qml
+        qml/ConnectTool/AboutPage.qml
     RESOURCES
         qml/ConnectTool/GitHub.svg
         qml/ConnectTool/QQ.svg
@@ -279,7 +360,24 @@ qt_add_qml_module(connecttool-qt
         qml/ConnectTool/AppIcon.png
         qml/ConnectTool/notify.wav)
 
+if(BUILD_TESTING)
+    add_test(NAME qml-smoke COMMAND connecttool-qt --qml-smoke-test)
+    set_tests_properties(qml-smoke PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+        TIMEOUT 20)
+endif()
+
 target_compile_definitions(connecttool-qt PRIVATE CONNECTTOOL_VERSION="${CONNECTTOOL_VERSION}")
+
+target_compile_features(connecttool-qt PRIVATE cxx_std_23)
+if(CONNECTTOOL_ENABLE_STRICT_WARNINGS)
+    if(MSVC)
+        target_compile_options(connecttool-qt PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(connecttool-qt PRIVATE
+            -Wall -Wextra -Wpedantic)
+    endif()
+endif()
 
 if(DEFINED ENV{NIXPKGS_QT6_QML_IMPORT_PATH})
     target_compile_definitions(connecttool-qt PRIVATE

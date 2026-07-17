@@ -8,15 +8,13 @@
 #include <arpa/inet.h>
 #endif
 
-HeartbeatManager::HeartbeatManager() : localIP_(0), running_(false) {
-  localNodeId_.fill(0);
-}
+HeartbeatManager::HeartbeatManager() : localIP_(0), running_(false) { localNodeId_.fill(0); }
 
 HeartbeatManager::~HeartbeatManager() { stop(); }
 
 void HeartbeatManager::initialize(const NodeID &localNodeId, uint32_t localIP) {
   localNodeId_ = localNodeId;
-  localIP_ = localIP;
+  localIP_.store(localIP, std::memory_order_relaxed);
   lastHeartbeatSent_ = std::chrono::steady_clock::now();
 }
 
@@ -33,8 +31,7 @@ void HeartbeatManager::start() {
     return;
   }
   running_ = true;
-  heartbeatThread_ =
-      std::make_unique<std::thread>(&HeartbeatManager::heartbeatLoop, this);
+  heartbeatThread_ = std::jthread([this](std::stop_token stopToken) { heartbeatLoop(stopToken); });
   std::cout << "Heartbeat manager started" << std::endl;
 }
 
@@ -43,10 +40,11 @@ void HeartbeatManager::stop() {
     return;
   }
   running_ = false;
-  if (heartbeatThread_ && heartbeatThread_->joinable()) {
-    heartbeatThread_->join();
+  if (heartbeatThread_.joinable()) {
+    heartbeatThread_.request_stop();
+    wakeCondition_.notify_all();
+    heartbeatThread_.join();
   }
-  heartbeatThread_.reset();
   std::cout << "Heartbeat manager stopped" << std::endl;
 }
 
@@ -57,45 +55,46 @@ void HeartbeatManager::reset() {
     nodeTable_.clear();
     ipToNodeId_.clear();
   }
-  localIP_ = 0;
+  localIP_.store(0, std::memory_order_relaxed);
   localNodeId_.fill(0);
   lastHeartbeatSent_ = std::chrono::steady_clock::now();
 }
 
-void HeartbeatManager::updateLocalIP(uint32_t ip) { localIP_ = ip; }
+void HeartbeatManager::updateLocalIP(uint32_t ip) { localIP_.store(ip, std::memory_order_relaxed); }
 
-void HeartbeatManager::heartbeatLoop() {
-  while (running_) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    if (!running_) {
+void HeartbeatManager::heartbeatLoop(std::stop_token stopToken) {
+  std::unique_lock wakeLock(wakeMutex_);
+  while (!stopToken.stop_requested()) {
+    wakeCondition_.wait_for(wakeLock, stopToken, std::chrono::seconds(1), [] { return false; });
+    if (stopToken.stop_requested()) {
       break;
     }
+    wakeLock.unlock();
     const auto now = std::chrono::steady_clock::now();
-    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                             now - lastHeartbeatSent_)
-                             .count();
-    if (elapsed >= HEARTBEAT_INTERVAL_MS && localIP_ != 0) {
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now - lastHeartbeatSent_).count();
+    if (elapsed >= HEARTBEAT_INTERVAL_MS && localIP_.load(std::memory_order_relaxed) != 0) {
       sendHeartbeat();
       lastHeartbeatSent_ = now;
     }
     checkExpiredLeases();
+    wakeLock.lock();
   }
 }
 
 void HeartbeatManager::sendHeartbeat() {
-  if (!sendCallback_ || localIP_ == 0) {
+  const uint32_t localIP = localIP_.load(std::memory_order_relaxed);
+  if (!sendCallback_ || localIP == 0) {
     return;
   }
   HeartbeatPayload payload;
-  payload.ipAddress = htonl(localIP_);
+  payload.ipAddress = htonl(localIP);
   payload.nodeId = localNodeId_;
   const auto now = std::chrono::steady_clock::now();
-  payload.timestampMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                            now.time_since_epoch())
-                            .count();
-  sendCallback_(VpnMessageType::HEARTBEAT,
-                reinterpret_cast<const uint8_t *>(&payload), sizeof(payload),
-                true);
+  payload.timestampMs =
+      std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
+  sendCallback_(VpnMessageType::HEARTBEAT, reinterpret_cast<const uint8_t *>(&payload),
+                sizeof(payload), true);
 }
 
 void HeartbeatManager::checkExpiredLeases() {
@@ -104,8 +103,7 @@ void HeartbeatManager::checkExpiredLeases() {
     std::lock_guard<std::mutex> lock(nodeTableMutex_);
     for (auto it = nodeTable_.begin(); it != nodeTable_.end();) {
       if (!it->second.isLocal && it->second.isLeaseExpired()) {
-        std::cout << "Node " << NodeIdentity::toString(it->first)
-                  << " lease expired" << std::endl;
+        std::cout << "Node " << NodeIdentity::toString(it->first) << " lease expired" << std::endl;
         expiredNodes.emplace_back(it->first, it->second.ipAddress);
         ipToNodeId_.erase(it->second.ipAddress);
         it = nodeTable_.erase(it);
@@ -122,8 +120,7 @@ void HeartbeatManager::checkExpiredLeases() {
   }
 }
 
-void HeartbeatManager::handleHeartbeat(const HeartbeatPayload &heartbeat,
-                                       CSteamID peerSteamID,
+void HeartbeatManager::handleHeartbeat(const HeartbeatPayload &heartbeat, CSteamID peerSteamID,
                                        const std::string &peerName) {
   const uint32_t heartbeatIP = ntohl(heartbeat.ipAddress);
   std::lock_guard<std::mutex> lock(nodeTableMutex_);
@@ -143,8 +140,7 @@ void HeartbeatManager::handleHeartbeat(const HeartbeatPayload &heartbeat,
   }
 }
 
-void HeartbeatManager::registerNode(const NodeID &nodeId, CSteamID steamId,
-                                    uint32_t ipAddress,
+void HeartbeatManager::registerNode(const NodeID &nodeId, CSteamID steamId, uint32_t ipAddress,
                                     const std::string &name) {
   std::lock_guard<std::mutex> lock(nodeTableMutex_);
   NodeInfo nodeInfo;
@@ -182,9 +178,8 @@ std::map<NodeID, NodeInfo> HeartbeatManager::getAllNodes() const {
   return nodeTable_;
 }
 
-bool HeartbeatManager::detectConflict(uint32_t sourceIP,
-                                      const NodeID &senderNodeId,
-                                      CSteamID &outConflictingSteamID) {
+std::optional<HeartbeatManager::ConflictResolution>
+HeartbeatManager::detectConflict(uint32_t sourceIP, const NodeID &senderNodeId) {
   std::lock_guard<std::mutex> lock(nodeTableMutex_);
   auto it = ipToNodeId_.find(sourceIP);
   if (it != ipToNodeId_.end() && it->second != senderNodeId) {
@@ -192,17 +187,17 @@ bool HeartbeatManager::detectConflict(uint32_t sourceIP,
     if (NodeIdentity::hasPriority(it->second, senderNodeId)) {
       auto nodeIt = nodeTable_.find(senderNodeId);
       if (nodeIt != nodeTable_.end()) {
-        outConflictingSteamID = nodeIt->second.steamId;
-        return true;
+        return ConflictResolution{.loserSteamId = nodeIt->second.steamId,
+                                  .winnerNodeId = it->second};
       }
     } else {
       auto nodeIt = nodeTable_.find(it->second);
       if (nodeIt != nodeTable_.end()) {
-        outConflictingSteamID = nodeIt->second.steamId;
+        const CSteamID loser = nodeIt->second.steamId;
         it->second = senderNodeId;
-        return true;
+        return ConflictResolution{.loserSteamId = loser, .winnerNodeId = senderNodeId};
       }
     }
   }
-  return false;
+  return std::nullopt;
 }

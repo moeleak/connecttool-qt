@@ -1,3 +1,4 @@
+#include "application_controller.h"
 #include "backend.h"
 #include "chat_model.h"
 #include "lobbies_model.h"
@@ -5,15 +6,14 @@
 
 #include <QCoreApplication>
 #include <QDebug>
+#include <QDir>
 #include <QFont>
 #include <QFontDatabase>
 #include <QGuiApplication>
 #include <QIcon>
 #include <QOperatingSystemVersion>
 #include <QQmlApplicationEngine>
-#include <QQmlContext>
 #include <QQmlEngine>
-#include <QDir>
 #include <QQuickStyle>
 #include <QQuickWindow>
 
@@ -65,9 +65,8 @@ int main(int argc, char *argv[]) {
   QGuiApplication app(argc, argv);
   installBundledFonts(app);
 #ifdef CONNECTTOOL_NIX_PLUGIN_PATH
-  const QStringList nixPluginPaths =
-      QString::fromLocal8Bit(CONNECTTOOL_NIX_PLUGIN_PATH)
-          .split(QLatin1Char(':'), Qt::SkipEmptyParts);
+  const QStringList nixPluginPaths = QString::fromLocal8Bit(CONNECTTOOL_NIX_PLUGIN_PATH)
+                                         .split(QLatin1Char(':'), Qt::SkipEmptyParts);
   for (const QString &path : nixPluginPaths) {
     if (QDir(path).exists()) {
       app.addLibraryPath(path);
@@ -84,24 +83,22 @@ int main(int argc, char *argv[]) {
                                            "Provided by backend");
   qmlRegisterUncreatableType<LobbiesModel>("ConnectTool", 1, 0, "LobbiesModel",
                                            "Provided by backend");
-  qmlRegisterUncreatableType<ChatModel>("ConnectTool", 1, 0, "ChatModel",
-                                        "Provided by backend");
+  qmlRegisterUncreatableType<ChatModel>("ConnectTool", 1, 0, "ChatModel", "Provided by backend");
 
   Backend backend;
+  ApplicationController application(backend);
+  ApplicationControllerRegistration::bind(application);
 
   QQmlApplicationEngine engine;
 #ifdef CONNECTTOOL_NIX_QML_IMPORT_PATH
-  const QStringList nixQmlImportPaths =
-      QString::fromLocal8Bit(CONNECTTOOL_NIX_QML_IMPORT_PATH)
-          .split(QLatin1Char(':'), Qt::SkipEmptyParts);
+  const QStringList nixQmlImportPaths = QString::fromLocal8Bit(CONNECTTOOL_NIX_QML_IMPORT_PATH)
+                                            .split(QLatin1Char(':'), Qt::SkipEmptyParts);
   for (const QString &path : nixQmlImportPaths) {
     if (QDir(path).exists()) {
       engine.addImportPath(path);
     }
   }
 #endif
-
-  engine.rootContext()->setContextProperty(QStringLiteral("backend"), &backend);
 
   QObject::connect(
       &engine, &QQmlApplicationEngine::objectCreationFailed, &app,
@@ -113,6 +110,10 @@ int main(int argc, char *argv[]) {
     if (auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first())) {
       backend.initializeSound(window);
     }
+  }
+
+  if (QCoreApplication::arguments().contains(QStringLiteral("--qml-smoke-test"))) {
+    return engine.rootObjects().isEmpty() ? EXIT_FAILURE : EXIT_SUCCESS;
   }
 
   return app.exec();

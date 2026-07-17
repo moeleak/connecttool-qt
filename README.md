@@ -21,8 +21,27 @@ connecttool-qt 是一款基于 connecttool
 ## 特性
 
 - 跨平台支持良好，支持 Windows/Linux/MacOS
+- 基于 Qt 6.11.1 与 C++23，使用强类型 ID、安全协议编解码和结构化并发
 - 支持单一的 TCP 转发模式和跨平台 TUN 虚拟网卡模式，实现异地组网
 - 房间内文字聊天，右键消息可置顶消息，让从其他地方加进来的人也可以看到房间信息快速了解房间
+
+代码分层、兼容性约束与验证方式见 [架构说明](docs/ARCHITECTURE.md)，性能测量方法与
+本次基线见 [性能说明](docs/PERFORMANCE.md)。
+
+## 开发与测试
+
+仅构建不依赖 Steamworks 的核心协议和测试：
+
+```sh
+nix develop
+cmake --preset core-tests
+cmake --build --preset core-tests
+ctest --preset core-tests
+```
+
+完整应用需要将 Steamworks SDK 放在 `steamworks/`、`sdk/`，或设置
+`STEAMWORKS_PATH_HINT`。随后使用 `dev`/`release` 预设构建。`dev` 构建会注册
+协议单元测试与离屏 QML 烟雾测试；`all_qmllint` 可检查全部 QML 绑定。
 
 ## 待开发特性
 
@@ -98,7 +117,7 @@ $ nix run github:moeleak/connecttool-qt --impure
 在部分 Linux 发行版（如 Ubuntu / Linux Mint）上，运行 AppImage 时可能出现 Qt 版本错误：
 
 ```
-libQt6Core.so.6: version `Qt_6.10' not found
+libQt6Core.so.6: version `Qt_6.11' not found
 ```
 
 这是由于运行时错误地加载了系统 Qt 库，而不是 AppImage 内部自带的 Qt。
@@ -135,6 +154,17 @@ cd squashfs-root
 
 
 ## Benchmark
+
+`release` 预设会额外生成 `connecttool_protocol_benchmark`，用于在同一台机器上
+比较 1200 字节数据包的编解码吞吐：
+
+```sh
+cmake --preset release
+cmake --build --preset release --target connecttool_protocol_benchmark
+./build/release/connecttool_protocol_benchmark
+```
+
+端到端性能仍建议使用 `iperf3`；下面保留了 1.5.x 的一次历史测量作为网络基线：
 
 ```
 connecttool-qt on  main via △ v4.1.2 via ❄️  impure (connecttool-qt-shell-env)

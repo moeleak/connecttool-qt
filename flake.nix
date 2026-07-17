@@ -84,7 +84,6 @@
                 qtdeclarative
                 qtsvg
                 qttools
-                qt5compat
               ])
               ++ (if pkgs.stdenv.isLinux then [ pkgs.qt6.qtwayland ] else [ ])
               ++ [ pkgs.boost ]
@@ -97,7 +96,7 @@
             ];
 
             configurePhase = ''
-              export NIXPKGS_QT6_QML_IMPORT_PATH="${pkgs.qt6.qtdeclarative}/${pkgs.qt6.qtbase.qtQmlPrefix}:${pkgs.qt6.qt5compat}/${pkgs.qt6.qtbase.qtQmlPrefix}"
+              export NIXPKGS_QT6_QML_IMPORT_PATH="${pkgs.qt6.qtdeclarative}/${pkgs.qt6.qtbase.qtQmlPrefix}"
               export NIXPKGS_QT6_PLUGIN_PATH="${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}:${pkgs.qt6.qtsvg}/${pkgs.qt6.qtbase.qtPluginPrefix}"
               CONNECTTOOL_VERSION=${version} cmake -B build -S . -G Ninja $cmakeFlags
             '';
@@ -126,6 +125,10 @@
               clang-tools
             ];
             CMAKE_EXPORT_COMPILE_COMMANDS = "1";
+            NIXPKGS_QT6_QML_IMPORT_PATH =
+              "${pkgs.qt6.qtdeclarative}/${pkgs.qt6.qtbase.qtQmlPrefix}";
+            NIXPKGS_QT6_PLUGIN_PATH =
+              "${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}:${pkgs.qt6.qtsvg}/${pkgs.qt6.qtbase.qtPluginPrefix}";
             shellHook = ''
               export CONNECTTOOL_VERSION=${self.packages.${system}.default.version}
               echo "Qt: $(qmake --version | grep -o 'Qt version [0-9.]*' | cut -d ' ' -f 3)"

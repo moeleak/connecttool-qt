@@ -1,45 +1,64 @@
 #include "steam_message_handler.h"
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <iostream>
 #include <isteamnetworkingsockets.h>
 #include <steam_api.h>
 
-SteamMessageHandler::SteamMessageHandler(
-    boost::asio::io_context &io_context, ISteamNetworkingSockets *interface,
-    std::vector<HSteamNetConnection> &connections, std::mutex &connectionsMutex,
-    bool &g_isHost, int &localPort)
-    : io_context_(io_context), m_pInterface_(interface),
-      connections_(connections), connectionsMutex_(connectionsMutex),
-      g_isHost_(g_isHost), localPort_(localPort), running_(false),
+SteamMessageHandler::SteamMessageHandler(Dependencies dependencies)
+    : io_context_(dependencies.ioContext), m_pInterface_(&dependencies.networking),
+      connections_(dependencies.connections), connectionsMutex_(dependencies.connectionsMutex),
+      g_isHost_(dependencies.isHost), localPort_(dependencies.localPort), running_(false),
       currentPollInterval_(0) {}
 
 SteamMessageHandler::~SteamMessageHandler() { stop(); }
 
 void SteamMessageHandler::start() {
-  if (running_)
+  if (running_.exchange(true)) {
     return;
-  running_ = true;
+  }
   timer_ = std::make_unique<boost::asio::steady_timer>(io_context_);
-  startAsyncPoll();
+  boost::asio::dispatch(io_context_, [this]() { startAsyncPoll(); });
 }
 
 void SteamMessageHandler::stop() {
-  if (!running_)
+  if (!running_.exchange(false)) {
     return;
-  running_ = false;
-  if (timer_) {
-    timer_->cancel();
   }
+  if (timer_) {
+    boost::asio::dispatch(io_context_, [timer = timer_.get()]() {
+      try {
+        timer->cancel();
+      } catch (const boost::system::system_error &) {
+        // The shared io_context may already be shutting down.
+      }
+    });
+  }
+  clearMultiplexManagers();
 }
 
 std::shared_ptr<MultiplexManager>
 SteamMessageHandler::getMultiplexManager(HSteamNetConnection conn) {
-  if (multiplexManagers_.find(conn) == multiplexManagers_.end()) {
-    multiplexManagers_[conn] = std::make_shared<MultiplexManager>(
-        m_pInterface_, conn, io_context_, g_isHost_, localPort_);
+  std::lock_guard<std::mutex> lock(multiplexMutex_);
+  const auto [position, inserted] = multiplexManagers_.try_emplace(conn);
+  if (inserted) {
+    position->second = std::make_shared<MultiplexManager>(
+        MultiplexManager::Dependencies{.steamInterface = *m_pInterface_,
+                                       .steamConnection = conn,
+                                       .ioContext = io_context_,
+                                       .isHost = g_isHost_,
+                                       .localPort = localPort_});
   }
-  return multiplexManagers_[conn];
+  return position->second;
+}
+
+void SteamMessageHandler::clearMultiplexManagers() {
+  std::map<HSteamNetConnection, std::shared_ptr<MultiplexManager>> managers;
+  {
+    std::lock_guard<std::mutex> lock(multiplexMutex_);
+    managers.swap(multiplexManagers_);
+  }
 }
 
 void SteamMessageHandler::startAsyncPoll() {
@@ -56,21 +75,22 @@ void SteamMessageHandler::startAsyncPoll() {
     std::lock_guard<std::mutex> lockConn(connectionsMutex_);
     currentConnections = connections_;
   }
+  {
+    std::lock_guard<std::mutex> lock(multiplexMutex_);
+    std::erase_if(multiplexManagers_, [&currentConnections](const auto &entry) {
+      return std::ranges::find(currentConnections, entry.first) == currentConnections.end();
+    });
+  }
   for (auto conn : currentConnections) {
     ISteamNetworkingMessage *pIncomingMsgs[256]; // larger batch for throughput
-    int numMsgs =
-        m_pInterface_->ReceiveMessagesOnConnection(conn, pIncomingMsgs, 256);
+    int numMsgs = m_pInterface_->ReceiveMessagesOnConnection(conn, pIncomingMsgs, 256);
     totalMessages += numMsgs;
     for (int i = 0; i < numMsgs; ++i) {
       ISteamNetworkingMessage *pIncomingMsg = pIncomingMsgs[i];
       const char *data = (const char *)pIncomingMsg->m_pData;
       size_t size = pIncomingMsg->m_cbSize;
       // Handle tunnel packets with multiplexing
-      if (multiplexManagers_.find(conn) == multiplexManagers_.end()) {
-        multiplexManagers_[conn] = std::make_shared<MultiplexManager>(
-            m_pInterface_, conn, io_context_, g_isHost_, localPort_);
-      }
-      multiplexManagers_[conn]->handleTunnelPacket(data, size);
+      getMultiplexManager(conn)->handleTunnelPacket(data, size);
       pIncomingMsg->Release();
     }
   }

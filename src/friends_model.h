@@ -2,11 +2,13 @@
 
 #include <QAbstractListModel>
 #include <QString>
+#include <QtQmlIntegration/qqmlintegration.h>
 #include <algorithm>
 #include <vector>
 
 class FriendsModel : public QAbstractListModel {
   Q_OBJECT
+  QML_ANONYMOUS
   Q_PROPERTY(int count READ count NOTIFY countChanged)
   Q_PROPERTY(QString filter READ filter WRITE setFilter NOTIFY filterChanged)
 public:
@@ -32,13 +34,12 @@ public:
   explicit FriendsModel(QObject *parent = nullptr);
 
   int rowCount(const QModelIndex &parent = QModelIndex()) const override;
-  QVariant data(const QModelIndex &index,
-                int role = Qt::DisplayRole) const override;
+  QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
   QHash<int, QByteArray> roleNames() const override;
 
   void setFriends(std::vector<Entry> list);
   bool setInviteCooldown(const QString &steamId, int seconds);
-  int count() const { return static_cast<int>(entries_.size()); }
+  int count() const { return static_cast<int>(filtered_.size()); }
   QString filter() const { return filter_; }
   void setFilter(const QString &text);
 

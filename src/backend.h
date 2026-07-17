@@ -2,25 +2,23 @@
 
 #include <QAbstractListModel>
 #include <QObject>
+#include <QPointer>
 #include <QTimer>
 #include <QVariantList>
-#include <QNetworkAccessManager>
-#include <QNetworkReply>
 #include <boost/asio.hpp>
 #include <chrono>
 #include <memory>
 #include <optional>
-#include <QPointer>
 #include <thread>
 #include <unordered_map>
-#include <QSaveFile>
 
-#include "friends_model.h"
 #include "chat_model.h"
+#include "friends_model.h"
 #include "lobbies_model.h"
 #include "members_model.h"
-#include "steam_room_manager.h"
 #include "sound_notifier.h"
+#include "steam_room_manager.h"
+#include "update_controller.h"
 
 class SteamNetworkingManager;
 class TCPServer;
@@ -34,60 +32,47 @@ class Backend : public QObject {
   Q_PROPERTY(bool isHost READ isHost NOTIFY stateChanged)
   Q_PROPERTY(bool isConnected READ isConnected NOTIFY stateChanged)
   Q_PROPERTY(QString status READ status NOTIFY stateChanged)
-  Q_PROPERTY(int connectionMode READ connectionMode WRITE setConnectionMode
-                 NOTIFY stateChanged)
+  Q_PROPERTY(int connectionMode READ connectionMode WRITE setConnectionMode NOTIFY stateChanged)
   Q_PROPERTY(QString lobbyId READ lobbyId NOTIFY stateChanged)
   Q_PROPERTY(QString lobbyName READ lobbyName NOTIFY stateChanged)
-  Q_PROPERTY(bool publishLobby READ publishLobby WRITE setPublishLobby NOTIFY
-                 publishLobbyChanged)
+  Q_PROPERTY(bool publishLobby READ publishLobby WRITE setPublishLobby NOTIFY publishLobbyChanged)
   Q_PROPERTY(QString hostSteamId READ hostSteamId NOTIFY hostSteamIdChanged)
-  Q_PROPERTY(QString joinTarget READ joinTarget WRITE setJoinTarget NOTIFY
-                 joinTargetChanged)
+  Q_PROPERTY(QString joinTarget READ joinTarget WRITE setJoinTarget NOTIFY joinTargetChanged)
   Q_PROPERTY(int relayPing READ relayPing NOTIFY relayPingChanged)
   Q_PROPERTY(QVariantList relayPops READ relayPops NOTIFY relayPopsChanged)
   Q_PROPERTY(int tcpClients READ tcpClients NOTIFY serverChanged)
+  Q_PROPERTY(int localPort READ localPort WRITE setLocalPort NOTIFY localPortChanged)
   Q_PROPERTY(
-      int localPort READ localPort WRITE setLocalPort NOTIFY localPortChanged)
-  Q_PROPERTY(int localBindPort READ localBindPort WRITE setLocalBindPort NOTIFY
-                 localBindPortChanged)
+      int localBindPort READ localBindPort WRITE setLocalBindPort NOTIFY localBindPortChanged)
   Q_PROPERTY(QVariantList friends READ friends NOTIFY friendsChanged)
   Q_PROPERTY(FriendsModel *friendsModel READ friendsModel NOTIFY friendsChanged)
-  Q_PROPERTY(QString friendFilter READ friendFilter WRITE setFriendFilter NOTIFY
-                 friendFilterChanged)
+  Q_PROPERTY(
+      QString friendFilter READ friendFilter WRITE setFriendFilter NOTIFY friendFilterChanged)
   Q_PROPERTY(ChatModel *chatModel READ chatModel CONSTANT)
-  Q_PROPERTY(bool chatReminderEnabled READ chatReminderEnabled WRITE
-                 setChatReminderEnabled NOTIFY chatReminderEnabledChanged)
-  Q_PROPERTY(bool friendsRefreshing READ friendsRefreshing NOTIFY
-                 friendsRefreshingChanged)
+  Q_PROPERTY(bool chatReminderEnabled READ chatReminderEnabled WRITE setChatReminderEnabled NOTIFY
+                 chatReminderEnabledChanged)
+  Q_PROPERTY(bool friendsRefreshing READ friendsRefreshing NOTIFY friendsRefreshingChanged)
   Q_PROPERTY(QString selfSteamId READ selfSteamId NOTIFY stateChanged)
   Q_PROPERTY(MembersModel *membersModel READ membersModel CONSTANT)
   Q_PROPERTY(LobbiesModel *lobbiesModel READ lobbiesModel CONSTANT)
+  Q_PROPERTY(QString roomName READ roomName WRITE setRoomName NOTIFY roomNameChanged)
+  Q_PROPERTY(bool lobbyRefreshing READ lobbyRefreshing NOTIFY lobbyRefreshingChanged)
+  Q_PROPERTY(QString lobbyFilter READ lobbyFilter WRITE setLobbyFilter NOTIFY lobbyFilterChanged)
   Q_PROPERTY(
-      QString roomName READ roomName WRITE setRoomName NOTIFY roomNameChanged)
-  Q_PROPERTY(
-      bool lobbyRefreshing READ lobbyRefreshing NOTIFY lobbyRefreshingChanged)
-  Q_PROPERTY(QString lobbyFilter READ lobbyFilter WRITE setLobbyFilter NOTIFY
-                 lobbyFilterChanged)
-  Q_PROPERTY(int lobbySortMode READ lobbySortMode WRITE setLobbySortMode NOTIFY
-                 lobbySortModeChanged)
+      int lobbySortMode READ lobbySortMode WRITE setLobbySortMode NOTIFY lobbySortModeChanged)
   Q_PROPERTY(QString tunLocalIp READ tunLocalIp NOTIFY stateChanged)
   Q_PROPERTY(QString tunDeviceName READ tunDeviceName NOTIFY stateChanged)
-  Q_PROPERTY(
-      int inviteCooldown READ inviteCooldown NOTIFY inviteCooldownChanged)
+  Q_PROPERTY(int inviteCooldown READ inviteCooldown NOTIFY inviteCooldownChanged)
   Q_PROPERTY(QString appVersion READ appVersion CONSTANT)
   Q_PROPERTY(QString latestVersion READ latestVersion NOTIFY updateInfoChanged)
   Q_PROPERTY(bool updateAvailable READ updateAvailable NOTIFY updateInfoChanged)
   Q_PROPERTY(bool checkingUpdate READ checkingUpdate NOTIFY updateInfoChanged)
-  Q_PROPERTY(QString updateStatusText READ updateStatusText NOTIFY
-                 updateInfoChanged)
-  Q_PROPERTY(QString latestReleasePage READ latestReleasePage NOTIFY
-                 updateInfoChanged)
-  Q_PROPERTY(bool downloadingUpdate READ downloadingUpdate NOTIFY
-                 updateDownloadChanged)
-  Q_PROPERTY(double downloadProgress READ downloadProgress NOTIFY
-                 updateDownloadChanged)
-  Q_PROPERTY(QString downloadSavedPath READ downloadSavedPath NOTIFY
-                 updateDownloadChanged)
+  Q_PROPERTY(QString updateStatusText READ updateStatusText NOTIFY updateInfoChanged)
+  Q_PROPERTY(QString latestReleasePage READ latestReleasePage NOTIFY updateInfoChanged)
+  Q_PROPERTY(bool downloadingUpdate READ downloadingUpdate NOTIFY updateDownloadChanged)
+  Q_PROPERTY(double downloadProgress READ downloadProgress NOTIFY updateDownloadChanged)
+  Q_PROPERTY(QString downloadSavedPath READ downloadSavedPath NOTIFY updateDownloadChanged)
+  Q_PROPERTY(UpdateController *updater READ updater CONSTANT)
 
 public:
   enum class ConnectionMode { Tcp = 0, Tun = 1 };
@@ -99,9 +84,7 @@ public:
   bool isHost() const;
   bool isConnected() const;
   QString status() const { return status_; }
-  int connectionMode() const {
-    return static_cast<int>(connectionMode_);
-  }
+  int connectionMode() const { return static_cast<int>(connectionMode_); }
   QString lobbyId() const;
   QString lobbyName() const;
   QString hostSteamId() const { return hostSteamId_; }
@@ -129,14 +112,15 @@ public:
   QString tunLocalIp() const { return tunLocalIp_; }
   QString tunDeviceName() const { return tunDeviceName_; }
   QString appVersion() const { return appVersion_; }
-  QString latestVersion() const { return latestVersion_; }
-  QString latestReleasePage() const { return latestReleasePage_; }
-  bool updateAvailable() const { return updateAvailable_; }
-  bool checkingUpdate() const { return checkingUpdate_; }
-  QString updateStatusText() const { return updateStatusText_; }
-  bool downloadingUpdate() const { return downloadingUpdate_; }
-  double downloadProgress() const { return downloadProgress_; }
-  QString downloadSavedPath() const { return downloadSavedPath_; }
+  QString latestVersion() const { return updateController_.latestVersion(); }
+  QString latestReleasePage() const { return updateController_.releasePage(); }
+  bool updateAvailable() const { return updateController_.updateAvailable(); }
+  bool checkingUpdate() const { return updateController_.checking(); }
+  QString updateStatusText() const { return updateController_.statusText(); }
+  bool downloadingUpdate() const { return updateController_.downloading(); }
+  double downloadProgress() const { return updateController_.progress(); }
+  QString downloadSavedPath() const { return updateController_.savedPath(); }
+  UpdateController *updater() { return &updateController_; }
 
   void setJoinTarget(const QString &id);
   void setPublishLobby(bool publish);
@@ -160,11 +144,7 @@ public:
   Q_INVOKABLE void addFriend(const QString &steamId);
   Q_INVOKABLE void copyToClipboard(const QString &text);
   Q_INVOKABLE void sendChatMessage(const QString &text);
-  Q_INVOKABLE void pinChatMessage(const QString &steamId,
-                                  const QString &displayName,
-                                  const QString &avatar,
-                                  const QString &message,
-                                  const QDateTime &timestamp);
+  Q_INVOKABLE void pinChatMessage(int row);
   Q_INVOKABLE void clearPinnedChatMessage();
   Q_INVOKABLE void launchSteam(bool useSteamChina);
   Q_INVOKABLE void checkForUpdates(bool useProxy = false);
@@ -201,8 +181,7 @@ private:
   void updateStatus();
   void updateMembersList();
   void updateFriendsList();
-  void
-  updateLobbiesList(const std::vector<SteamRoomManager::LobbyInfo> &lobbies);
+  void updateLobbiesList(const std::vector<SteamRoomManager::LobbyInfo> &lobbies);
   QString avatarForSteamId(const CSteamID &memberId);
   void handleChatMessage(uint64_t senderId, const QString &message);
   void ensureServerRunning();
@@ -214,18 +193,9 @@ private:
   void setFriendsRefreshing(bool refreshing);
   void updateRelayPing();
   void handlePinnedMessageMetadata(const QString &payload);
-  std::optional<ChatModel::Entry>
-  parsePinnedMessagePayload(const QString &payload) const;
+  std::optional<ChatModel::Entry> parsePinnedMessagePayload(const QString &payload) const;
   QString serializePinnedMessage(const ChatModel::Entry &entry) const;
-  ChatModel::Entry populatePinnedEntryAvatar(ChatModel::Entry entry,
-                                             bool isSelfAuthor);
-  void resetUpdateCheck();
-  void resetDownloadState();
-  void handleUpdateReply();
-  void handleDownloadFinished();
-  bool isVersionNewer(const QString &candidate, const QString &current) const;
-  QString normalizeVersion(const QString &input) const;
-  QString preferredDownloadUrl(bool useProxy) const;
+  ChatModel::Entry populatePinnedEntryAvatar(ChatModel::Entry entry, bool isSelfAuthor);
   void setLobbyRefreshing(bool refreshing);
   void setStatusOverride(const QString &text, int durationMs = 3000);
   void clearStatusOverride();
@@ -252,10 +222,9 @@ private:
   std::unique_ptr<SteamRoomManager> roomManager_;
   std::unique_ptr<TCPServer> server_;
   boost::asio::io_context ioContext_;
-  std::unique_ptr<
-      boost::asio::executor_work_guard<boost::asio::io_context::executor_type>>
+  std::unique_ptr<boost::asio::executor_work_guard<boost::asio::io_context::executor_type>>
       workGuard_;
-  std::thread ioThread_;
+  std::jthread ioThread_;
   QTimer callbackTimer_;
   QTimer steamCheckTimer_;
   QTimer slowTimer_;
@@ -309,19 +278,6 @@ private:
   QVariantList relayPops_;
   // Update info
   QString appVersion_;
-  QString latestVersion_;
-  QString latestDownloadUrl_;
-  QString latestReleasePage_;
-  QString updateStatusText_;
-  QString downloadSavedPath_;
-  QString downloadTargetDir_;
-  QString downloadTargetRequested_;
-  bool updateAvailable_ = false;
-  bool checkingUpdate_ = false;
-  bool downloadingUpdate_ = false;
-  double downloadProgress_ = 0.0;
+  UpdateController updateController_;
   bool chatReminderEnabled_ = true;
-  QNetworkAccessManager networkManager_;
-  QPointer<QNetworkReply> currentUpdateReply_;
-  QPointer<QNetworkReply> currentDownloadReply_;
 };

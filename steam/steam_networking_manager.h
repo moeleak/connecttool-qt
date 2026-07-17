@@ -2,12 +2,12 @@
 #define STEAM_NETWORKING_MANAGER_H
 
 #include "steam_message_handler.h"
+#include <chrono>
 #include <isteamnetworkingsockets.h>
 #include <isteamnetworkingutils.h>
 #include <map>
 #include <memory>
 #include <mutex>
-#include <chrono>
 #include <steam_api.h>
 #include <steamnetworkingtypes.h>
 #include <vector>
@@ -42,9 +42,7 @@ public:
   bool isHost() const { return g_isHost; }
   bool isClient() const { return g_isClient; }
   bool isConnected() const { return g_isConnected; }
-  const std::vector<HSteamNetConnection> &getConnections() const {
-    return connections;
-  }
+  const std::vector<HSteamNetConnection> &getConnections() const { return connections; }
   std::mutex &getConnectionsMutex() { return connectionsMutex; }
   void closeConnectionToPeer(const CSteamID &peer);
   int getHostPing() const { return hostPing_; }
@@ -66,13 +64,13 @@ public:
   bool &getIsHost() { return g_isHost; }
 
   void setMessageHandlerDependencies(boost::asio::io_context &io_context,
-                                     std::unique_ptr<TCPServer> &server,
-                                     int &localPort, int &localBindPort);
+                                     std::unique_ptr<TCPServer> &server, int &localPort,
+                                     int &localBindPort);
 
   // Message handler
   void startMessageHandler();
   void stopMessageHandler();
-  SteamMessageHandler *getMessageHandler() { return messageHandler_; }
+  SteamMessageHandler *getMessageHandler() { return messageHandler_.get(); }
 
   // Update user info (ping, relay status)
   void update();
@@ -110,7 +108,7 @@ private:
   std::unique_ptr<TCPServer> *server_;
   int *localPort_;
   int *localBindPort_;
-  SteamMessageHandler *messageHandler_;
+  std::unique_ptr<SteamMessageHandler> messageHandler_;
   SteamRoomManager *roomManager_;
 
   bool relayFallbackPending_;
@@ -121,10 +119,8 @@ private:
   std::chrono::steady_clock::time_point connectAttemptStart_;
 
   // Callback
-  static void OnSteamNetConnectionStatusChanged(
-      SteamNetConnectionStatusChangedCallback_t *pInfo);
-  void handleConnectionStatusChanged(
-      SteamNetConnectionStatusChangedCallback_t *pInfo);
+  static void OnSteamNetConnectionStatusChanged(SteamNetConnectionStatusChangedCallback_t *pInfo);
+  void handleConnectionStatusChanged(SteamNetConnectionStatusChangedCallback_t *pInfo);
 
   friend class SteamRoomManager;
 };

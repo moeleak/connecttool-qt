@@ -41,9 +41,8 @@ QVariant ChatModel::data(const QModelIndex &index, int role) const {
 }
 
 QHash<int, QByteArray> ChatModel::roleNames() const {
-  return {{SteamIdRole, "steamId"},       {DisplayNameRole, "displayName"},
-          {AvatarRole, "avatar"},         {MessageRole, "message"},
-          {IsSelfRole, "isSelf"},         {TimestampRole, "timestamp"},
+  return {{SteamIdRole, "steamId"},  {DisplayNameRole, "displayName"}, {AvatarRole, "avatar"},
+          {MessageRole, "message"},  {IsSelfRole, "isSelf"},           {TimestampRole, "timestamp"},
           {IsPinnedRole, "isPinned"}};
 }
 
@@ -88,8 +87,7 @@ void ChatModel::clear() {
 void ChatModel::setPinnedMessage(const Entry &entry) {
   Entry pinned = entry;
   pinned.pinned = true;
-  const bool changed =
-      !pinnedEntry_.has_value() || !sameMessage(*pinnedEntry_, pinned);
+  const bool changed = !pinnedEntry_.has_value() || !sameMessage(*pinnedEntry_, pinned);
   pinnedEntry_ = std::move(pinned);
   updatePinnedFlags();
   if (changed) {
@@ -104,6 +102,13 @@ void ChatModel::clearPinnedMessage() {
   pinnedEntry_.reset();
   updatePinnedFlags();
   emit pinnedChanged();
+}
+
+std::optional<ChatModel::Entry> ChatModel::entryAt(int row) const {
+  if (row < 0 || static_cast<std::size_t>(row) >= entries_.size()) {
+    return std::nullopt;
+  }
+  return entries_[static_cast<std::size_t>(row)];
 }
 
 QVariantMap ChatModel::pinnedMessage() const {
@@ -138,8 +143,7 @@ std::optional<int> ChatModel::findPinnedEntryIndex() const {
     if (!entry.timestamp.isValid() || !pinned.timestamp.isValid()) {
       return static_cast<int>(i);
     }
-    const qint64 delta =
-        std::llabs(pinned.timestamp.msecsTo(entry.timestamp));
+    const qint64 delta = std::llabs(pinned.timestamp.msecsTo(entry.timestamp));
     if (!bestIndex || delta < bestDelta) {
       bestDelta = delta;
       bestIndex = static_cast<int>(i);
@@ -157,8 +161,7 @@ void ChatModel::updatePinnedFlags() {
   std::vector<int> changedRows;
   changedRows.reserve(entries_.size());
   for (size_t i = 0; i < entries_.size(); ++i) {
-    bool shouldPin =
-        pinnedRow.has_value() && static_cast<int>(i) == pinnedRow.value();
+    bool shouldPin = pinnedRow.has_value() && static_cast<int>(i) == pinnedRow.value();
     if (entries_[i].pinned != shouldPin) {
       entries_[i].pinned = shouldPin;
       changedRows.push_back(static_cast<int>(i));

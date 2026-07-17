@@ -1,136 +1,165 @@
 #include "tcp_server.h"
 #include "../steam/steam_networking_manager.h"
 #include "firewall_windows.h"
-#include <iostream>
 #include <algorithm>
+#include <iostream>
+#include <mutex>
+#include <stdexcept>
+#include <vector>
 
-TCPServer::TCPServer(int port, SteamNetworkingManager* manager) : port_(port), running_(false), acceptor_(io_context_), work_(boost::asio::make_work_guard(io_context_)), manager_(manager) {}
+struct TCPServer::ClientRegistry {
+  void add(std::shared_ptr<tcp::socket> socket) {
+    int count = 0;
+    {
+      std::lock_guard lock(clientsMutex);
+      sockets.push_back(std::move(socket));
+      count = static_cast<int>(sockets.size());
+    }
+    publish(count);
+  }
+
+  void remove(const std::weak_ptr<tcp::socket> &socket) {
+    const auto closed = socket.lock();
+    int count = 0;
+    {
+      std::lock_guard lock(clientsMutex);
+      std::erase(sockets, closed);
+      count = static_cast<int>(sockets.size());
+    }
+    publish(count);
+  }
+
+  void clear() {
+    std::vector<std::shared_ptr<tcp::socket>> closing;
+    {
+      std::lock_guard lock(clientsMutex);
+      closing.swap(sockets);
+    }
+    for (const auto &socket : closing) {
+      boost::system::error_code ignored;
+      socket->shutdown(tcp::socket::shutdown_both, ignored);
+      socket->close(ignored);
+    }
+    publish(0);
+  }
+
+  [[nodiscard]] int count() const {
+    std::lock_guard lock(clientsMutex);
+    return static_cast<int>(sockets.size());
+  }
+
+  void setCallback(std::function<void(int)> next) {
+    std::lock_guard lock(callbackMutex);
+    callback = std::move(next);
+  }
+
+private:
+  void publish(int count) {
+    // Clearing the callback is also a synchronization barrier during
+    // teardown: no callback can retain the owning Backend afterwards.
+    std::lock_guard lock(callbackMutex);
+    if (callback) {
+      callback(count);
+    }
+  }
+
+  mutable std::mutex clientsMutex;
+  std::vector<std::shared_ptr<tcp::socket>> sockets;
+  std::mutex callbackMutex;
+  std::function<void(int)> callback;
+};
+
+TCPServer::TCPServer(int port, SteamNetworkingManager *manager)
+    : port_(port), running_(false), work_(boost::asio::make_work_guard(io_context_)),
+      acceptor_(io_context_), clients_(std::make_shared<ClientRegistry>()), manager_(manager) {}
 
 TCPServer::~TCPServer() { stop(); }
 
 bool TCPServer::start() {
-    try {
-        tcp::endpoint endpoint(tcp::v4(), port_);
-        acceptor_.open(endpoint.protocol());
-        acceptor_.set_option(tcp::acceptor::reuse_address(true));
-        acceptor_.bind(endpoint);
-        acceptor_.listen();
+  try {
+    tcp::endpoint endpoint(tcp::v4(), port_);
+    acceptor_.open(endpoint.protocol());
+    acceptor_.set_option(tcp::acceptor::reuse_address(true));
+    acceptor_.bind(endpoint);
+    acceptor_.listen();
 
 #if defined(_WIN32)
-        if (!ensureTcpFirewallRule("ConnectTool TCP inbound", port_)) {
-            std::cerr << "Failed to add firewall rule for TCP port " << port_
-                      << std::endl;
-        } else {
-            std::cout << "Added firewall rule for TCP port " << port_
-                      << std::endl;
-        }
+    if (!ensureTcpFirewallRule("ConnectTool TCP inbound", port_)) {
+      std::cerr << "Failed to add firewall rule for TCP port " << port_ << std::endl;
+    } else {
+      std::cout << "Added firewall rule for TCP port " << port_ << std::endl;
+    }
 #endif
 
-        running_ = true;
-        serverThread_ = std::thread([this]() { 
-            std::cout << "Server thread started" << std::endl;
-            io_context_.run(); 
-            std::cout << "Server thread stopped" << std::endl;
-        });
-        start_accept();
-        std::cout << "TCP server started on port " << port_ << std::endl;
-        return true;
-    } catch (const std::exception& e) {
-        std::cerr << "Failed to start TCP server: " << e.what() << std::endl;
-        return false;
-    }
+    running_ = true;
+    serverThread_ = std::jthread([this](std::stop_token) {
+      std::cout << "Server thread started" << std::endl;
+      io_context_.run();
+      std::cout << "Server thread stopped" << std::endl;
+    });
+    start_accept();
+    std::cout << "TCP server started on port " << port_ << std::endl;
+    return true;
+  } catch (const std::exception &e) {
+    std::cerr << "Failed to start TCP server: " << e.what() << std::endl;
+    return false;
+  }
 }
 
 void TCPServer::stop() {
-    running_ = false;
-    io_context_.stop();
-    if (serverThread_.joinable()) {
-        serverThread_.join();
-    }
-    acceptor_.close();
+  if (!running_.exchange(false)) {
+    return;
+  }
+  boost::system::error_code closeError;
+  acceptor_.cancel(closeError);
+  acceptor_.close(closeError);
+  io_context_.stop();
+  if (serverThread_.joinable()) {
+    serverThread_.request_stop();
+    serverThread_.join();
+  }
+  clients_->clear();
+  clients_->setCallback({});
 }
 
-void TCPServer::sendToAll(const std::string& message, std::shared_ptr<tcp::socket> excludeSocket) {
-    sendToAll(message.c_str(), message.size(), excludeSocket);
-}
-
-void TCPServer::sendToAll(const char* data, size_t size, std::shared_ptr<tcp::socket> excludeSocket) {
-    std::lock_guard<std::mutex> lock(clientsMutex_);
-    for (auto& client : clients_) {
-        if (client != excludeSocket) {
-            boost::asio::async_write(*client, boost::asio::buffer(data, size), [](const boost::system::error_code&, std::size_t) {});
-        }
-    }
-}
-
-int TCPServer::getClientCount() {
-    std::lock_guard<std::mutex> lock(clientsMutex_);
-    return clients_.size();
-}
+int TCPServer::getClientCount() const { return clients_->count(); }
 
 void TCPServer::setClientCountCallback(std::function<void(int)> callback) {
-    clientCountCallback_ = std::move(callback);
-}
-
-void TCPServer::notifyClientCount(int count) {
-    if (clientCountCallback_) {
-        clientCountCallback_(count);
-    }
+  clients_->setCallback(std::move(callback));
 }
 
 void TCPServer::start_accept() {
-    auto socket = std::make_shared<tcp::socket>(io_context_);
-    acceptor_.async_accept(*socket, [this, socket](const boost::system::error_code& error) {
-        if (!error) {
-            std::cout << "New client connected" << std::endl;
-            // Low latency between local TCP and Steam tunnel
-            boost::system::error_code ec;
-            socket->set_option(tcp::no_delay(true), ec);
-            auto multiplexManager = manager_->getMessageHandler()->getMultiplexManager(manager_->getConnection());
-            std::string id = multiplexManager->addClient(socket);
-            int currentCount = 0;
-            {
-                std::lock_guard<std::mutex> lock(clientsMutex_);
-                clients_.push_back(socket);
-                currentCount = static_cast<int>(clients_.size());
-            }
-            notifyClientCount(currentCount);
-            start_read(socket, id);
+  auto socket = std::make_shared<tcp::socket>(io_context_);
+  acceptor_.async_accept(*socket, [this, socket](const boost::system::error_code &error) {
+    if (!error) {
+      std::cout << "New client connected" << std::endl;
+      // Low latency between local TCP and Steam tunnel
+      boost::system::error_code ec;
+      socket->set_option(tcp::no_delay(true), ec);
+      const auto registry = clients_;
+      const std::weak_ptr<tcp::socket> weakSocket = socket;
+      bool registered = false;
+      try {
+        SteamMessageHandler *handler = manager_ ? manager_->getMessageHandler() : nullptr;
+        if (!handler) {
+          throw std::runtime_error("Steam message handler is unavailable");
         }
-        if (running_) {
-            start_accept();
+        const auto multiplexManager = handler->getMultiplexManager(manager_->getConnection());
+        registry->add(socket);
+        registered = true;
+        const std::string id = multiplexManager->addClient(
+            socket, [registry, weakSocket]() { registry->remove(weakSocket); });
+        std::cout << "TCP client assigned tunnel id " << id << std::endl;
+      } catch (const std::exception &exception) {
+        if (registered) {
+          registry->remove(weakSocket);
         }
-    });
-}
-
-void TCPServer::start_read(std::shared_ptr<tcp::socket> socket, std::string id) {
-    auto buffer = std::make_shared<std::vector<char>>(1048576);
-    socket->async_read_some(boost::asio::buffer(*buffer), [this, socket, buffer, id](const boost::system::error_code& error, std::size_t bytes_transferred) {
-        if (!error) {
-            if (manager_->isConnected()) {
-                auto multiplexManager = manager_->getMessageHandler()->getMultiplexManager(manager_->getConnection());
-                multiplexManager->sendTunnelPacket(id, buffer->data(), bytes_transferred, 0);
-            } else {
-                std::cout << "Not connected to Steam, skipping forward" << std::endl;
-            }
-            sendToAll(buffer->data(), bytes_transferred, socket);
-            start_read(socket, id);
-        } else {
-            std::cout << "TCP client " << id << " disconnected or error: " << error.message() << std::endl;
-            // Send disconnect packet
-            if (manager_->isConnected()) {
-                auto multiplexManager = manager_->getMessageHandler()->getMultiplexManager(manager_->getConnection());
-                multiplexManager->sendTunnelPacket(id, nullptr, 0, 1);
-                // Remove client
-                multiplexManager->removeClient(id);
-            }
-            int currentCount = 0;
-            {
-                std::lock_guard<std::mutex> lock(clientsMutex_);
-                clients_.erase(std::remove(clients_.begin(), clients_.end(), socket), clients_.end());
-                currentCount = static_cast<int>(clients_.size());
-            }
-            notifyClientCount(currentCount);
-        }
-    });
+        socket->close(ec);
+        std::cerr << "Failed to register TCP client: " << exception.what() << std::endl;
+      }
+    }
+    if (running_) {
+      start_accept();
+    }
+  });
 }

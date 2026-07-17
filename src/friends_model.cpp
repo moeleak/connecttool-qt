@@ -46,23 +46,21 @@ QHash<int, QByteArray> FriendsModel::roleNames() const {
 
 void FriendsModel::setFriends(std::vector<Entry> list) {
   auto filtered = filterEntries(list);
-  const bool entryCountChanged = list.size() != entries_.size();
   const bool viewSizeChanged = filtered.size() != filtered_.size();
 
-  if (entryCountChanged || viewSizeChanged) {
+  if (list.size() != entries_.size() || viewSizeChanged) {
     beginResetModel();
     entries_ = std::move(list);
     filtered_ = std::move(filtered);
     endResetModel();
-    if (entryCountChanged) {
+    if (viewSizeChanged) {
       emit countChanged();
     }
   } else {
     entries_ = std::move(list);
     filtered_ = std::move(filtered);
     if (!filtered_.empty()) {
-      emit dataChanged(index(0, 0),
-                       index(static_cast<int>(filtered_.size()) - 1, 0));
+      emit dataChanged(index(0, 0), index(static_cast<int>(filtered_.size()) - 1, 0));
     }
   }
 }
@@ -86,8 +84,7 @@ bool FriendsModel::setInviteCooldown(const QString &steamId, int seconds) {
     }
   }
   if (changedRow >= 0) {
-    emit dataChanged(index(changedRow, 0), index(changedRow, 0),
-                     {InviteCooldownRole});
+    emit dataChanged(index(changedRow, 0), index(changedRow, 0), {InviteCooldownRole});
     return true;
   }
   return false;
@@ -106,11 +103,11 @@ void FriendsModel::setFilter(const QString &text) {
     beginResetModel();
     filtered_ = std::move(filtered);
     endResetModel();
+    emit countChanged();
   } else {
     filtered_ = std::move(filtered);
     if (!filtered_.empty()) {
-      emit dataChanged(index(0, 0),
-                       index(static_cast<int>(filtered_.size()) - 1, 0));
+      emit dataChanged(index(0, 0), index(static_cast<int>(filtered_.size()) - 1, 0));
     }
   }
 }
@@ -124,17 +121,16 @@ FriendsModel::filterEntries(const std::vector<Entry> &source) const {
       result.push_back(entry);
     }
   }
-  std::stable_sort(result.begin(), result.end(),
-                   [this](const Entry &a, const Entry &b) {
-                     if (a.presenceRank != b.presenceRank) {
-                       return a.presenceRank < b.presenceRank;
-                     }
-                     const int sa = scoreFor(a.displayName);
-                     const int sb = scoreFor(b.displayName);
-                     if (sa != sb)
-                       return sa < sb;
-                     return a.displayName.toLower() < b.displayName.toLower();
-                   });
+  std::stable_sort(result.begin(), result.end(), [this](const Entry &a, const Entry &b) {
+    if (a.presenceRank != b.presenceRank) {
+      return a.presenceRank < b.presenceRank;
+    }
+    const int sa = scoreFor(a.displayName);
+    const int sb = scoreFor(b.displayName);
+    if (sa != sb)
+      return sa < sb;
+    return a.displayName.toLower() < b.displayName.toLower();
+  });
   return result;
 }
 

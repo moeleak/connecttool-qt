@@ -10,8 +10,7 @@ int LobbiesModel::rowCount(const QModelIndex &parent) const {
 }
 
 QVariant LobbiesModel::data(const QModelIndex &index, int role) const {
-  if (!index.isValid() || index.row() < 0 ||
-      index.row() >= rowCount(index.parent())) {
+  if (!index.isValid() || index.row() < 0 || index.row() >= rowCount(index.parent())) {
     return {};
   }
 
@@ -28,21 +27,18 @@ QVariant LobbiesModel::data(const QModelIndex &index, int role) const {
   case MemberCountRole:
     return entry.memberCount;
   case PingRole:
-    return entry.ping >= 0 ? QVariant(entry.ping) : QVariant();
+    return entry.ping;
   default:
     return {};
   }
 }
 
 QHash<int, QByteArray> LobbiesModel::roleNames() const {
-  return {{LobbyIdRole, "lobbyId"},     {NameRole, "name"},
-          {HostNameRole, "hostName"},   {HostIdRole, "hostId"},
-          {MemberCountRole, "members"}, {PingRole, "ping"}};
+  return {{LobbyIdRole, "lobbyId"}, {NameRole, "name"},           {HostNameRole, "hostName"},
+          {HostIdRole, "hostId"},   {MemberCountRole, "members"}, {PingRole, "ping"}};
 }
 
-void LobbiesModel::setLobbies(std::vector<Entry> list) {
-  applyReset(std::move(list));
-}
+void LobbiesModel::setLobbies(std::vector<Entry> list) { applyReset(std::move(list)); }
 
 bool LobbiesModel::removeByHostId(const QString &hostId) {
   if (hostId.isEmpty()) {
@@ -50,9 +46,7 @@ bool LobbiesModel::removeByHostId(const QString &hostId) {
   }
   std::vector<Entry> next = entries_;
   next.erase(std::remove_if(next.begin(), next.end(),
-                            [&hostId](const Entry &entry) {
-                              return entry.hostId == hostId;
-                            }),
+                            [&hostId](const Entry &entry) { return entry.hostId == hostId; }),
              next.end());
   if (next.size() == entries_.size()) {
     return false;
@@ -65,48 +59,28 @@ bool LobbiesModel::setMemberCount(const QString &lobbyId, int count) {
   if (count < 0) {
     return false;
   }
-  bool any = false;
-  for (auto &entry : entries_) {
-    if (entry.lobbyId == lobbyId && entry.memberCount != count) {
-      entry.memberCount = count;
-      any = true;
-    }
+  const auto entry = std::ranges::find(entries_, lobbyId, &Entry::lobbyId);
+  if (entry == entries_.end() || entry->memberCount == count) {
+    return false;
   }
-  if (any) {
-    filtered_ = filterEntries(entries_);
-    if (!filtered_.empty()) {
-      emit dataChanged(index(0, 0),
-                       index(static_cast<int>(filtered_.size()) - 1, 0),
-                       {MemberCountRole});
-    }
-  }
-  return any;
+
+  beginResetModel();
+  entry->memberCount = count;
+  filtered_ = filterEntries(entries_);
+  endResetModel();
+  return true;
 }
 
 bool LobbiesModel::adjustMemberCount(const QString &lobbyId, int delta) {
   if (delta == 0) {
     return false;
   }
-  bool any = false;
-  for (auto &entry : entries_) {
-    if (entry.lobbyId == lobbyId) {
-      const int next = std::max(0, entry.memberCount + delta);
-      if (next != entry.memberCount) {
-        entry.memberCount = next;
-        any = true;
-      }
-      break;
-    }
+  const auto entry = std::ranges::find(entries_, lobbyId, &Entry::lobbyId);
+  if (entry == entries_.end()) {
+    return false;
   }
-  if (any) {
-    filtered_ = filterEntries(entries_);
-    if (!filtered_.empty()) {
-      emit dataChanged(index(0, 0),
-                       index(static_cast<int>(filtered_.size()) - 1, 0),
-                       {MemberCountRole});
-    }
-  }
-  return any;
+  const int next = std::max(0, entry->memberCount + delta);
+  return setMemberCount(lobbyId, next);
 }
 
 void LobbiesModel::setFilter(const QString &text) {
@@ -117,32 +91,29 @@ void LobbiesModel::setFilter(const QString &text) {
   filterLower_ = filter_.toLower();
   auto next = filterEntries(entries_);
   const bool sizeChanged = next.size() != filtered_.size();
+
+  beginResetModel();
   filtered_ = std::move(next);
+  endResetModel();
   emit filterChanged();
   if (sizeChanged) {
-    beginResetModel();
-    endResetModel();
     emit countChanged();
-  } else if (!filtered_.empty()) {
-    emit dataChanged(index(0, 0),
-                     index(static_cast<int>(filtered_.size()) - 1, 0));
   }
 }
 
 void LobbiesModel::setSortMode(int mode) {
+  if (mode != SortByMembers && mode != SortByName && mode != SortByPing) {
+    mode = SortByMembers;
+  }
   if (mode == sortMode_) {
     return;
   }
-  if (mode != SortByMembers && mode != SortByName) {
-    mode = SortByMembers;
-  }
+
+  beginResetModel();
   sortMode_ = mode;
   filtered_ = filterEntries(entries_);
+  endResetModel();
   emit sortModeChanged();
-  if (!filtered_.empty()) {
-    emit dataChanged(index(0, 0),
-                     index(static_cast<int>(filtered_.size()) - 1, 0));
-  }
 }
 
 std::vector<LobbiesModel::Entry>
@@ -154,20 +125,26 @@ LobbiesModel::filterEntries(const std::vector<Entry> &source) const {
       result.push_back(entry);
     }
   }
-  std::stable_sort(result.begin(), result.end(),
-                   [this](const Entry &a, const Entry &b) {
-                     if (sortMode_ == SortByName) {
-                       const int cmp =
-                           a.name.toLower().compare(b.name.toLower());
-                       if (cmp != 0)
-                         return cmp < 0;
-                       return a.memberCount > b.memberCount;
-                     }
-                     if (a.memberCount != b.memberCount) {
-                       return a.memberCount > b.memberCount;
-                     }
-                     return a.name.toLower() < b.name.toLower();
-                   });
+  std::stable_sort(result.begin(), result.end(), [this](const Entry &a, const Entry &b) {
+    if (sortMode_ == SortByName) {
+      const int cmp = a.name.toLower().compare(b.name.toLower());
+      if (cmp != 0)
+        return cmp < 0;
+      return a.memberCount > b.memberCount;
+    }
+    if (sortMode_ == SortByPing) {
+      if ((a.ping < 0) != (b.ping < 0)) {
+        return a.ping >= 0;
+      }
+      if (a.ping != b.ping) {
+        return a.ping < b.ping;
+      }
+    }
+    if (a.memberCount != b.memberCount) {
+      return a.memberCount > b.memberCount;
+    }
+    return a.name.toLower() < b.name.toLower();
+  });
   return result;
 }
 
@@ -178,22 +155,16 @@ bool LobbiesModel::matchesFilter(const Entry &entry) const {
   const auto contains = [&](const QString &value) {
     return value.toLower().contains(filterLower_);
   };
-  return contains(entry.name) || contains(entry.hostName) ||
-         contains(entry.lobbyId);
+  return contains(entry.name) || contains(entry.hostName) || contains(entry.lobbyId);
 }
 
 void LobbiesModel::applyReset(std::vector<Entry> list) {
-  const bool sizeChanged = list.size() != entries_.size();
+  const auto previousCount = filtered_.size();
+  beginResetModel();
   entries_ = std::move(list);
-  auto nextFiltered = filterEntries(entries_);
-  const bool viewChanged = nextFiltered.size() != filtered_.size();
-  filtered_ = std::move(nextFiltered);
-  if (sizeChanged || viewChanged) {
-    beginResetModel();
-    endResetModel();
+  filtered_ = filterEntries(entries_);
+  endResetModel();
+  if (previousCount != filtered_.size()) {
     emit countChanged();
-  } else if (!filtered_.empty()) {
-    emit dataChanged(index(0, 0),
-                     index(static_cast<int>(filtered_.size()) - 1, 0));
   }
 }

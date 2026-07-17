@@ -12,26 +12,23 @@ class SteamVpnNetworkingManager;
 
 class VpnMessageHandler {
 public:
-  VpnMessageHandler(ISteamNetworkingMessages *interface,
-                    SteamVpnNetworkingManager *manager);
+  VpnMessageHandler(ISteamNetworkingMessages *interface, SteamVpnNetworkingManager *manager);
   ~VpnMessageHandler();
 
   void start();
   void stop();
-  void setIoContext(boost::asio::io_context *externalContext);
 
 private:
   void schedulePoll();
   void pollMessages();
-  void runInternalLoop();
+  void runInternalLoop(std::stop_token stopToken);
 
   ISteamNetworkingMessages *interface_;
   SteamVpnNetworkingManager *manager_;
 
-  std::unique_ptr<boost::asio::io_context> internalIoContext_;
-  boost::asio::io_context *ioContext_;
+  boost::asio::io_context ioContext_;
   std::unique_ptr<boost::asio::steady_timer> pollTimer_;
-  std::unique_ptr<std::thread> ioThread_;
+  std::jthread ioThread_;
 
   std::atomic<bool> running_;
   std::chrono::microseconds currentPollInterval_;

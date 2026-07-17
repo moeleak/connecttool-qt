@@ -1,17 +1,15 @@
 #pragma once
 
+#include "multiplex_manager.h"
+#include <atomic>
 #include <boost/asio.hpp>
 #include <functional>
-#include <memory>
-#include <vector>
-#include <string>
-#include <thread>
-#include <mutex>
-#include <unordered_map>
 #include <isteamnetworkingsockets.h>
 #include <isteamnetworkingutils.h>
+#include <memory>
 #include <steamnetworkingtypes.h>
-#include "multiplex_manager.h"
+#include <string>
+#include <thread>
 
 class SteamNetworkingManager;
 
@@ -20,29 +18,25 @@ using boost::asio::ip::tcp;
 // TCP Server class
 class TCPServer {
 public:
-    TCPServer(int port, SteamNetworkingManager* manager);
-    ~TCPServer();
+  TCPServer(int port, SteamNetworkingManager *manager);
+  ~TCPServer();
 
-    bool start();
-    void stop();
-    void sendToAll(const std::string& message, std::shared_ptr<tcp::socket> excludeSocket = nullptr);
-    void sendToAll(const char* data, size_t size, std::shared_ptr<tcp::socket> excludeSocket = nullptr);
-    int getClientCount();
-    void setClientCountCallback(std::function<void(int)> callback);
+  bool start();
+  void stop();
+  int getClientCount() const;
+  void setClientCountCallback(std::function<void(int)> callback);
 
 private:
-    void start_accept();
-    void start_read(std::shared_ptr<tcp::socket> socket, std::string id);
-    void notifyClientCount(int count);
+  struct ClientRegistry;
 
-    int port_;
-    bool running_;
-    boost::asio::io_context io_context_;
-    boost::asio::executor_work_guard<boost::asio::io_context::executor_type> work_;
-    tcp::acceptor acceptor_;
-    std::vector<std::shared_ptr<tcp::socket>> clients_;
-    std::mutex clientsMutex_;
-    std::thread serverThread_;
-    SteamNetworkingManager* manager_;
-    std::function<void(int)> clientCountCallback_;
+  void start_accept();
+
+  int port_;
+  std::atomic<bool> running_;
+  boost::asio::io_context io_context_;
+  boost::asio::executor_work_guard<boost::asio::io_context::executor_type> work_;
+  tcp::acceptor acceptor_;
+  std::shared_ptr<ClientRegistry> clients_;
+  std::jthread serverThread_;
+  SteamNetworkingManager *manager_;
 };

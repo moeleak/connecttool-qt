@@ -18,7 +18,7 @@ concurrency:
 env:
   BUILD_TYPE: Release
   BOOST_VERSION: "1.84.0"
-  QT_VERSION: "6.10.1"
+  QT_VERSION: "6.11.1"
 jobs:
   build:
     runs-on: windows-latest
@@ -41,7 +41,7 @@ jobs:
         with:
           version: "${{ env.QT_VERSION }}"
           arch: win64_msvc2022_64
-          modules: qt5compat qtshadertools
+          modules: qtshadertools
           cache: true
       - name: Download Boost headers
         shell: pwsh
@@ -91,6 +91,10 @@ jobs:
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DCMAKE_C_COMPILER=cl.exe -DCMAKE_CXX_COMPILER=cl.exe -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
       - name: Build
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+      - name: Validate QML
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --target all_qmllint
+      - name: Test
+        run: ctest --test-dir build --build-config ${{ env.BUILD_TYPE }} --output-on-failure
       - name: Install
         run: cmake --install build --config ${{ env.BUILD_TYPE }} --prefix "${{ github.workspace }}/install"
       - name: Deploy Qt runtime (Windows)
@@ -222,7 +226,7 @@ jobs:
         with:
           version: "${{ env.QT_VERSION }}"
           arch: clang_64
-          modules: qt5compat qtshadertools
+          modules: qtshadertools
           cache: true
       - name: Download Boost headers
         shell: bash
@@ -280,6 +284,10 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=x86_64
       - name: Build
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+      - name: Validate QML
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --target all_qmllint
+      - name: Test
+        run: ctest --test-dir build --build-config ${{ env.BUILD_TYPE }} --output-on-failure
       - name: Deploy Qt runtime (macOS)
         shell: bash
         run: |
@@ -326,6 +334,8 @@ jobs:
           }
           fix_deps "libsteam_api.dylib"
           fix_deps "libsteamwebrtc.dylib"
+          codesign --force --deep --sign - "$app"
+          codesign --verify --deep --strict "$app"
       - name: Create DMG
         shell: bash
         run: |
@@ -390,7 +400,7 @@ jobs:
         with:
           version: "${{ env.QT_VERSION }}"
           arch: linux_gcc_64
-          modules: qt5compat qtshadertools qtwaylandcompositor
+          modules: qtshadertools qtwaylandcompositor
           archieves: qtwayland
           aqtsource: "git+https://github.com/miurahr/aqtinstall.git"
           cache: true
@@ -449,6 +459,10 @@ jobs:
             -DCMAKE_INSTALL_PREFIX=/usr
       - name: Build (Linux)
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+      - name: Validate QML
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --target all_qmllint
+      - name: Test
+        run: ctest --test-dir build --build-config ${{ env.BUILD_TYPE }} --output-on-failure
       - name: Install (Linux)
         shell: bash
         run: |

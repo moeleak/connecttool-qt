@@ -9,19 +9,17 @@
 #endif
 
 IpNegotiator::IpNegotiator()
-    : localIP_(0), baseIP_(0), subnetMask_(0), state_(NegotiationState::IDLE),
-      candidateIP_(0), probeOffset_(0) {
+    : localIP_(0), baseIP_(0), subnetMask_(0), state_(NegotiationState::IDLE), candidateIP_(0),
+      probeOffset_(0) {
   localNodeId_.fill(0);
 }
 
-void IpNegotiator::initialize(CSteamID localSteamID, uint32_t baseIP,
-                              uint32_t subnetMask) {
+void IpNegotiator::initialize(CSteamID localSteamID, uint32_t baseIP, uint32_t subnetMask) {
   localSteamID_ = localSteamID;
   baseIP_ = baseIP;
   subnetMask_ = subnetMask;
   localNodeId_ = NodeIdentity::generate(localSteamID);
-  std::cout << "Generated Node ID: " << NodeIdentity::toString(localNodeId_)
-            << std::endl;
+  std::cout << "Generated Node ID: " << NodeIdentity::toString(localNodeId_) << std::endl;
 }
 
 void IpNegotiator::reset() {
@@ -60,9 +58,8 @@ void IpNegotiator::startNegotiation() {
   state_ = NegotiationState::PROBING;
 
   std::cout << "Probing IP: " << ((candidateIP_ >> 24) & 0xFF) << "."
-            << ((candidateIP_ >> 16) & 0xFF) << "."
-            << ((candidateIP_ >> 8) & 0xFF) << "." << (candidateIP_ & 0xFF)
-            << " (offset=" << probeOffset_ << ")" << std::endl;
+            << ((candidateIP_ >> 16) & 0xFF) << "." << ((candidateIP_ >> 8) & 0xFF) << "."
+            << (candidateIP_ & 0xFF) << " (offset=" << probeOffset_ << ")" << std::endl;
 
   sendProbeRequest();
   probeStartTime_ = std::chrono::steady_clock::now();
@@ -71,8 +68,7 @@ void IpNegotiator::startNegotiation() {
 uint32_t IpNegotiator::generateCandidateIP(uint32_t offset) {
   uint32_t hash = (static_cast<uint32_t>(localNodeId_[NODE_ID_SIZE - 1]) |
                    (static_cast<uint32_t>(localNodeId_[NODE_ID_SIZE - 2]) << 8) |
-                   (static_cast<uint32_t>(localNodeId_[NODE_ID_SIZE - 3])
-                    << 16));
+                   (static_cast<uint32_t>(localNodeId_[NODE_ID_SIZE - 3]) << 16));
 
   hash = (hash + offset) & 0x00FFFFFF;
 
@@ -122,8 +118,7 @@ void IpNegotiator::sendProbeRequest() {
   payload.ipAddress = htonl(candidateIP_);
   payload.nodeId = localNodeId_;
 
-  broadcastCallback_(VpnMessageType::PROBE_REQUEST,
-                     reinterpret_cast<const uint8_t *>(&payload),
+  broadcastCallback_(VpnMessageType::PROBE_REQUEST, reinterpret_cast<const uint8_t *>(&payload),
                      sizeof(payload), true);
 }
 
@@ -132,9 +127,8 @@ void IpNegotiator::checkTimeout() {
     return;
   }
   const auto now = std::chrono::steady_clock::now();
-  const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-                           now - probeStartTime_)
-                           .count();
+  const auto elapsed =
+      std::chrono::duration_cast<std::chrono::milliseconds>(now - probeStartTime_).count();
   if (elapsed < PROBE_TIMEOUT_MS) {
     return;
   }
@@ -150,13 +144,11 @@ void IpNegotiator::checkTimeout() {
   std::vector<CSteamID> nodesToForceRelease;
 
   for (const auto &conflict : conflicts) {
-    const auto currentMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                               now.time_since_epoch())
-                               .count();
+    const auto currentMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
     const int64_t heartbeatAge = currentMs - conflict.lastHeartbeatMs;
     if (heartbeatAge >= HEARTBEAT_EXPIRY_MS) {
-      std::cout << "Ignoring stale node (heartbeat age: " << heartbeatAge
-                << "ms)" << std::endl;
+      std::cout << "Ignoring stale node (heartbeat age: " << heartbeatAge << "ms)" << std::endl;
       continue;
     }
 
@@ -173,11 +165,9 @@ void IpNegotiator::checkTimeout() {
       sendForcedRelease(candidateIP_, steamID);
     }
 
-    std::cout << "IP negotiation success. Local IP: "
-              << ((candidateIP_ >> 24) & 0xFF) << "."
-              << ((candidateIP_ >> 16) & 0xFF) << "."
-              << ((candidateIP_ >> 8) & 0xFF) << "." << (candidateIP_ & 0xFF)
-              << std::endl;
+    std::cout << "IP negotiation success. Local IP: " << ((candidateIP_ >> 24) & 0xFF) << "."
+              << ((candidateIP_ >> 16) & 0xFF) << "." << ((candidateIP_ >> 8) & 0xFF) << "."
+              << (candidateIP_ & 0xFF) << std::endl;
 
     state_ = NegotiationState::STABLE;
     localIP_ = candidateIP_;
@@ -187,22 +177,19 @@ void IpNegotiator::checkTimeout() {
       successCallback_(localIP_, localNodeId_);
     }
   } else {
-    std::cout << "Lost IP arbitration, reselecting with new offset..."
-              << std::endl;
+    std::cout << "Lost IP arbitration, reselecting with new offset..." << std::endl;
     probeOffset_++;
     startNegotiation();
   }
 }
 
-void IpNegotiator::handleProbeRequest(const ProbeRequestPayload &request,
-                                      CSteamID senderSteamID) {
+void IpNegotiator::handleProbeRequest(const ProbeRequestPayload &request, CSteamID senderSteamID) {
   const uint32_t requestedIP = ntohl(request.ipAddress);
   bool shouldRespond = false;
 
   if (state_ == NegotiationState::STABLE && requestedIP == localIP_) {
     shouldRespond = true;
-  } else if (state_ == NegotiationState::PROBING &&
-             requestedIP == candidateIP_) {
+  } else if (state_ == NegotiationState::PROBING && requestedIP == candidateIP_) {
     if (NodeIdentity::hasPriority(localNodeId_, request.nodeId)) {
       shouldRespond = true;
     } else {
@@ -218,12 +205,10 @@ void IpNegotiator::handleProbeRequest(const ProbeRequestPayload &request,
     response.ipAddress = htonl(requestedIP);
     response.nodeId = localNodeId_;
     const auto now = std::chrono::steady_clock::now();
-    response.lastHeartbeatMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                   now.time_since_epoch())
-                                   .count();
+    response.lastHeartbeatMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
 
-    sendCallback_(VpnMessageType::PROBE_RESPONSE,
-                  reinterpret_cast<const uint8_t *>(&response),
+    sendCallback_(VpnMessageType::PROBE_RESPONSE, reinterpret_cast<const uint8_t *>(&response),
                   sizeof(response), senderSteamID, true);
     std::cout << "Sent conflict response for IP" << std::endl;
   }
@@ -244,18 +229,16 @@ void IpNegotiator::handleProbeResponse(const ProbeResponsePayload &response,
   info.lastHeartbeatMs = response.lastHeartbeatMs;
   info.senderSteamID = senderSteamID;
   collectedConflicts_.push_back(info);
-  std::cout << "Received conflict response from node "
-            << NodeIdentity::toString(response.nodeId) << std::endl;
+  std::cout << "Received conflict response from node " << NodeIdentity::toString(response.nodeId)
+            << std::endl;
 }
 
-void IpNegotiator::handleAddressAnnounce(
-    const AddressAnnouncePayload &announce, CSteamID peerSteamID,
-    const std::string &peerName) {
+void IpNegotiator::handleAddressAnnounce(const AddressAnnouncePayload &announce,
+                                         CSteamID peerSteamID, const std::string &) {
   const uint32_t announcedIP = ntohl(announce.ipAddress);
-  std::cout << "Received address announce: " << ((announcedIP >> 24) & 0xFF)
-            << "." << ((announcedIP >> 16) & 0xFF) << "."
-            << ((announcedIP >> 8) & 0xFF) << "." << (announcedIP & 0xFF)
-            << " from node " << NodeIdentity::toString(announce.nodeId)
+  std::cout << "Received address announce: " << ((announcedIP >> 24) & 0xFF) << "."
+            << ((announcedIP >> 16) & 0xFF) << "." << ((announcedIP >> 8) & 0xFF) << "."
+            << (announcedIP & 0xFF) << " from node " << NodeIdentity::toString(announce.nodeId)
             << std::endl;
 
   if (announcedIP == localIP_ && state_ == NegotiationState::STABLE) {
@@ -272,8 +255,7 @@ void IpNegotiator::handleAddressAnnounce(
   markIPUsed(announcedIP);
 }
 
-void IpNegotiator::handleForcedRelease(const ForcedReleasePayload &release,
-                                       CSteamID senderSteamID) {
+void IpNegotiator::handleForcedRelease(const ForcedReleasePayload &release, CSteamID) {
   const uint32_t releasedIP = ntohl(release.ipAddress);
   bool shouldRelease = false;
 
@@ -302,8 +284,7 @@ void IpNegotiator::sendAddressAnnounce() {
   AddressAnnouncePayload payload;
   payload.ipAddress = htonl(localIP_);
   payload.nodeId = localNodeId_;
-  broadcastCallback_(VpnMessageType::ADDRESS_ANNOUNCE,
-                     reinterpret_cast<const uint8_t *>(&payload),
+  broadcastCallback_(VpnMessageType::ADDRESS_ANNOUNCE, reinterpret_cast<const uint8_t *>(&payload),
                      sizeof(payload), true);
 }
 
@@ -314,22 +295,19 @@ void IpNegotiator::sendAddressAnnounceTo(CSteamID targetSteamID) {
   AddressAnnouncePayload payload;
   payload.ipAddress = htonl(localIP_);
   payload.nodeId = localNodeId_;
-  sendCallback_(VpnMessageType::ADDRESS_ANNOUNCE,
-                reinterpret_cast<const uint8_t *>(&payload), sizeof(payload),
-                targetSteamID, true);
+  sendCallback_(VpnMessageType::ADDRESS_ANNOUNCE, reinterpret_cast<const uint8_t *>(&payload),
+                sizeof(payload), targetSteamID, true);
 }
 
-void IpNegotiator::sendForcedRelease(uint32_t ipAddress,
-                                     CSteamID targetSteamID) {
+void IpNegotiator::sendForcedRelease(uint32_t ipAddress, CSteamID targetSteamID) {
   if (!sendCallback_) {
     return;
   }
   ForcedReleasePayload payload;
   payload.ipAddress = htonl(ipAddress);
   payload.winnerNodeId = localNodeId_;
-  sendCallback_(VpnMessageType::FORCED_RELEASE,
-                reinterpret_cast<const uint8_t *>(&payload), sizeof(payload),
-                targetSteamID, true);
+  sendCallback_(VpnMessageType::FORCED_RELEASE, reinterpret_cast<const uint8_t *>(&payload),
+                sizeof(payload), targetSteamID, true);
   std::cout << "Sent forced release" << std::endl;
 }
 

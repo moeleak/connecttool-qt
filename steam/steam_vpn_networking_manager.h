@@ -1,9 +1,10 @@
 #pragma once
 
+#include <isteamnetworkingmessages.h>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <steam_api.h>
-#include <isteamnetworkingmessages.h>
 #include <steamnetworkingtypes.h>
 #include <string>
 
@@ -20,8 +21,7 @@ public:
   bool initialize();
   void shutdown();
 
-  bool sendMessageToUser(CSteamID peerID, const void *data, uint32_t size,
-                         int flags);
+  bool sendMessageToUser(CSteamID peerID, const void *data, uint32_t size, int flags);
   void broadcastMessage(const void *data, uint32_t size, int flags);
 
   void addPeer(CSteamID peerID);
@@ -40,8 +40,7 @@ public:
   void setVpnBridge(SteamVpnBridge *vpnBridge) { vpnBridge_ = vpnBridge; }
   SteamVpnBridge *getVpnBridge() { return vpnBridge_; }
 
-  void handleIncomingVpnMessage(const uint8_t *data, size_t size,
-                                CSteamID senderSteamID);
+  void handleIncomingVpnMessage(const uint8_t *data, size_t size, CSteamID senderSteamID);
 
   void setHostSteamID(CSteamID id) { hostSteamID_ = id; }
   CSteamID getHostSteamID() const { return hostSteamID_; }
@@ -51,7 +50,7 @@ private:
   std::set<CSteamID> peers_;
   mutable std::mutex peersMutex_;
 
-  VpnMessageHandler *messageHandler_;
+  std::unique_ptr<VpnMessageHandler> messageHandler_;
   SteamVpnBridge *vpnBridge_;
   CSteamID hostSteamID_;
 

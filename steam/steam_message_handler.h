@@ -3,6 +3,7 @@
 
 #include "../net/multiplex_manager.h"
 #include "../net/tcp_server.h"
+#include <atomic>
 #include <boost/asio.hpp>
 #include <map>
 #include <memory>
@@ -13,18 +14,23 @@
 
 class SteamMessageHandler {
 public:
-  SteamMessageHandler(boost::asio::io_context &io_context,
-                      ISteamNetworkingSockets *interface,
-                      std::vector<HSteamNetConnection> &connections,
-                      std::mutex &connectionsMutex, bool &g_isHost,
-                      int &localPort);
+  struct Dependencies {
+    boost::asio::io_context &ioContext;
+    ISteamNetworkingSockets &networking;
+    std::vector<HSteamNetConnection> &connections;
+    std::mutex &connectionsMutex;
+    bool &isHost;
+    int &localPort;
+  };
+
+  explicit SteamMessageHandler(Dependencies dependencies);
   ~SteamMessageHandler();
 
   void start();
   void stop();
 
-  std::shared_ptr<MultiplexManager>
-  getMultiplexManager(HSteamNetConnection conn);
+  std::shared_ptr<MultiplexManager> getMultiplexManager(HSteamNetConnection conn);
+  void clearMultiplexManagers();
 
 private:
   void startAsyncPoll();
@@ -36,11 +42,11 @@ private:
   bool &g_isHost_;
   int &localPort_;
 
-  std::map<HSteamNetConnection, std::shared_ptr<MultiplexManager>>
-      multiplexManagers_;
+  std::map<HSteamNetConnection, std::shared_ptr<MultiplexManager>> multiplexManagers_;
+  std::mutex multiplexMutex_;
 
   std::unique_ptr<boost::asio::steady_timer> timer_;
-  bool running_;
+  std::atomic<bool> running_;
   int currentPollInterval_; // 当前轮询间隔（毫秒）
 };
 
