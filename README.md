@@ -22,6 +22,7 @@ connecttool-qt 是一款基于 connecttool
 
 - 跨平台支持良好，支持 Windows/Linux/MacOS
 - 基于 Qt 6.11.1 与 C++23，使用强类型 ID、安全协议编解码和结构化并发
+- 使用固定版本的 QmlMaterial 构建 Material Design 3 桌面界面
 - 支持单一的 TCP 转发模式和跨平台 TUN 虚拟网卡模式，实现异地组网
 - 房间内文字聊天，右键消息可置顶消息，让从其他地方加进来的人也可以看到房间信息快速了解房间
 
@@ -42,6 +43,8 @@ ctest --preset core-tests
 完整应用需要将 Steamworks SDK 放在 `steamworks/`、`sdk/`，或设置
 `STEAMWORKS_PATH_HINT`。随后使用 `dev`/`release` 预设构建。`dev` 构建会注册
 协议单元测试与离屏 QML 烟雾测试；`all_qmllint` 可检查全部 QML 绑定。
+非 Nix 环境首次配置还需要 Git LFS，以获取 QmlMaterial 内置的 Material Symbols
+字体；Nix 构建会按固定提交和哈希预取该依赖。
 
 ## 待开发特性
 

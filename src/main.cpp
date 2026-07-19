@@ -1,8 +1,5 @@
 #include "application_controller.h"
 #include "backend.h"
-#include "chat_model.h"
-#include "lobbies_model.h"
-#include "members_model.h"
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -11,11 +8,15 @@
 #include <QFontDatabase>
 #include <QGuiApplication>
 #include <QIcon>
+#include <QImage>
 #include <QOperatingSystemVersion>
 #include <QQmlApplicationEngine>
 #include <QQmlEngine>
-#include <QQuickStyle>
 #include <QQuickWindow>
+#include <QTimer>
+#include <QtQml/QQmlExtensionPlugin>
+
+Q_IMPORT_QML_PLUGIN(Qcm_MaterialPlugin)
 
 namespace {
 void installBundledFonts(QGuiApplication &app) {
@@ -42,6 +43,12 @@ void installBundledFonts(QGuiApplication &app) {
     qWarning() << "No bundled font families were loaded; using platform default.";
     return;
   }
+
+  // QmlMaterial falls back to the generic Qt family on a few internal text
+  // paths. Resolve it to the bundled CJK family up front instead of letting
+  // the macOS font backend populate every alias on first use.
+  QFont::insertSubstitution(QStringLiteral("Sans Serif"), preferredFamily);
+  QFont::insertSubstitution(QStringLiteral("sans-serif"), preferredFamily);
 
   QFont font(preferredFamily);
   font.setStyleStrategy(QFont::PreferAntialias);
@@ -75,21 +82,12 @@ int main(int argc, char *argv[]) {
 #endif
 
   app.setWindowIcon(QIcon(QStringLiteral(":/qt/qml/ConnectTool/AppIcon.png")));
-  QQuickStyle::setStyle(QStringLiteral("Material"));
-
-  qmlRegisterUncreatableType<FriendsModel>("ConnectTool", 1, 0, "FriendsModel",
-                                           "Provided by backend");
-  qmlRegisterUncreatableType<MembersModel>("ConnectTool", 1, 0, "MembersModel",
-                                           "Provided by backend");
-  qmlRegisterUncreatableType<LobbiesModel>("ConnectTool", 1, 0, "LobbiesModel",
-                                           "Provided by backend");
-  qmlRegisterUncreatableType<ChatModel>("ConnectTool", 1, 0, "ChatModel", "Provided by backend");
-
   Backend backend;
   ApplicationController application(backend);
   ApplicationControllerRegistration::bind(application);
 
   QQmlApplicationEngine engine;
+  engine.addImportPath(QStringLiteral("qrc:/"));
 #ifdef CONNECTTOOL_NIX_QML_IMPORT_PATH
   const QStringList nixQmlImportPaths = QString::fromLocal8Bit(CONNECTTOOL_NIX_QML_IMPORT_PATH)
                                             .split(QLatin1Char(':'), Qt::SkipEmptyParts);
@@ -106,13 +104,46 @@ int main(int argc, char *argv[]) {
 
   engine.loadFromModule("ConnectTool", "Main");
 
+  bool screenshotRequested = false;
   if (!engine.rootObjects().isEmpty()) {
     if (auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first())) {
       backend.initializeSound(window);
+
+      const QStringList arguments = QCoreApplication::arguments();
+      const auto optionValue = [&arguments](const QString &prefix) {
+        for (const QString &argument : arguments) {
+          if (argument.startsWith(prefix)) {
+            return argument.sliced(prefix.size());
+          }
+        }
+        return QString{};
+      };
+
+      const QString screenshotPath =
+          optionValue(QStringLiteral("--qml-screenshot="));
+      if (!screenshotPath.isEmpty()) {
+        screenshotRequested = true;
+        bool pageIsValid = false;
+        const int requestedPage =
+            optionValue(QStringLiteral("--qml-page=")).toInt(&pageIsValid);
+        if (pageIsValid) {
+          window->setProperty("pageIndex", qBound(0, requestedPage, 3));
+        }
+
+        QTimer::singleShot(1200, window, [window, screenshotPath, &app]() {
+          const QImage image = window->grabWindow();
+          const bool saved = !image.isNull() && image.save(screenshotPath);
+          if (!saved) {
+            qWarning() << "Failed to save QML screenshot to" << screenshotPath;
+          }
+          app.exit(saved ? EXIT_SUCCESS : EXIT_FAILURE);
+        });
+      }
     }
   }
 
-  if (QCoreApplication::arguments().contains(QStringLiteral("--qml-smoke-test"))) {
+  if (QCoreApplication::arguments().contains(QStringLiteral("--qml-smoke-test")) &&
+      !screenshotRequested) {
     return engine.rootObjects().isEmpty() ? EXIT_FAILURE : EXIT_SUCCESS;
   }
 

@@ -630,13 +630,16 @@ void SteamRoomManager::refreshLobbyMetadata() {
   }
 
   if (SteamNetworkingUtils()) {
-    SteamNetworkPingLocation_t local;
-    SteamNetworkingUtils()->GetLocalPingLocation(local);
-    char buffer[k_cchMaxSteamNetworkingPingLocationString]{};
-    SteamNetworkingUtils()->ConvertPingLocationToString(
-        local, buffer, sizeof(buffer));
-    SteamMatchmaking()->SetLobbyData(currentLobby, kLobbyKeyPingLocation,
-                                     buffer);
+    SteamNetworkPingLocation_t local{};
+    if (SteamNetworkingUtils()->GetLocalPingLocation(local) >= 0.0F) {
+      char buffer[k_cchMaxSteamNetworkingPingLocationString]{};
+      SteamNetworkingUtils()->ConvertPingLocationToString(
+          local, buffer, sizeof(buffer));
+      if (buffer[0] != '\0') {
+        SteamMatchmaking()->SetLobbyData(currentLobby,
+                                         kLobbyKeyPingLocation, buffer);
+      }
+    }
   }
   const bool wantsTun = advertisedWantsTun_;
   SteamMatchmaking()->SetLobbyData(currentLobby, kLobbyKeyMode,

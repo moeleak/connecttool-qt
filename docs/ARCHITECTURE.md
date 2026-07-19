@@ -34,8 +34,12 @@ QML pages
   room/network state.
 - `src/platform_environment.*` isolates Windows, Linux, and macOS privilege and
   Steam discovery workarounds from application orchestration.
-- `qml/ConnectTool/` contains small reusable visual components and one page per
-  feature area. `Main.qml` only owns the application shell and navigation.
+- `qml/ConnectTool/` uses the pinned `Qcm.Material` module for Material Design
+  3 tokens, controls, icons, motion, and shaders. `Main.qml` owns only the
+  application shell, theme bootstrap, navigation, dialogs, and snackbars.
+- The room surface is split into `ConnectionPanel`, `ChatPanel`, and
+  `PeoplePanel`; message/member/friend delegates are separate types. Page code
+  binds only to the typed `App` façade and contains no transport policy.
 
 ## Compatibility and safety
 
@@ -65,6 +69,14 @@ ctest --preset core-tests
 With a Steamworks SDK available, `dev` also builds the application and runs the
 offscreen QML smoke test. `all_qmllint` statically checks every QML binding. The
 three platform CI jobs run both checks before packaging.
+
+For visual regression checks, an application build can render any primary page
+offscreen without changing normal startup behavior:
+
+```sh
+QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
+  ./connecttool-qt --qml-page=0 --qml-screenshot=/tmp/connecttool-room.png
+```
 
 The `release` preset builds `connecttool_protocol_benchmark`. Run it on the same
 machine before and after transport changes; it reports encode/decode operations

@@ -355,6 +355,8 @@ bool Backend::tryInitializeSteam() {
   }
 
   // Clean up any partial state before retrying.
+  localPingLocationReady_ = false;
+  lobbyLatencyRefreshPending_ = false;
   steamManager_.reset();
   roomManager_.reset();
 
@@ -1353,6 +1355,30 @@ void Backend::updateRelayPing() {
   }
 }
 
+void Backend::updateLobbyLatencyReadiness() {
+  if (!roomManager_ || !SteamNetworkingUtils()) {
+    return;
+  }
+
+  if (!localPingLocationReady_) {
+    SteamNetworkPingLocation_t local{};
+    if (SteamNetworkingUtils()->GetLocalPingLocation(local) < 0.0F) {
+      return;
+    }
+
+    localPingLocationReady_ = true;
+    lobbyLatencyRefreshPending_ = true;
+    if (isHost()) {
+      roomManager_->refreshLobbyMetadata();
+    }
+  }
+
+  if (lobbyLatencyRefreshPending_ && !lobbyRefreshing_) {
+    lobbyLatencyRefreshPending_ = false;
+    refreshLobbies();
+  }
+}
+
 void Backend::copyToClipboard(const QString &text) {
   if (text.isEmpty()) {
     return;
@@ -1628,6 +1654,8 @@ void Backend::tick() {
   if (steamManager_) {
     steamManager_->update();
   }
+
+  updateLobbyLatencyReadiness();
 
   const auto now = std::chrono::steady_clock::now();
   if (lastRelayPingSample_.time_since_epoch().count() == 0 ||

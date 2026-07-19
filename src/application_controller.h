@@ -223,8 +223,14 @@ public:
   [[nodiscard]] UpdaterController *updater() { return &updater_; }
   [[nodiscard]] QString version() const { return backend_.appVersion(); }
 
-  Q_INVOKABLE void copy(const QString &text) { backend_.copyToClipboard(text); }
+  Q_INVOKABLE void copy(const QString &text) {
+    backend_.copyToClipboard(text);
+    emit copied();
+  }
   Q_INVOKABLE void launchSteam(bool china = false) { backend_.launchSteam(china); }
+
+signals:
+  void copied();
 
 private:
   Backend &backend_;

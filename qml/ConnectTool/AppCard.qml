@@ -1,47 +1,43 @@
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
+import Qcm.Material as MD
 
-Control {
+MD.Pane {
     id: root
 
-    default property alias contentData: contentColumn.data
+    default property alias cardContent: contentColumn.data
     property string title: ""
     property string subtitle: ""
 
     padding: 18
-
-    background: Rectangle {
-        radius: Theme.radius
-        color: Theme.surface
-        border.color: Theme.border
-        border.width: 1
-    }
+    radius: MD.Token.shape.corner.large
+    elevation: MD.Token.elevation.level1
+    backgroundColor: Theme.surfaceContainerLow
 
     contentItem: ColumnLayout {
         id: contentColumn
-        spacing: Theme.spacing
+        spacing: Theme.sectionSpacing
 
         ColumnLayout {
             visible: root.title.length > 0 || root.subtitle.length > 0
-            spacing: 3
             Layout.fillWidth: true
+            spacing: 3
 
-            Label {
+            MD.Text {
                 visible: root.title.length > 0
                 text: root.title
-                color: Theme.text
-                font.pixelSize: 17
-                font.weight: Font.DemiBold
+                color: Theme.foreground
+                typescale: MD.Token.typescale.title_large
+                prominent: true
             }
 
-            Label {
+            MD.Text {
                 visible: root.subtitle.length > 0
-                text: root.subtitle
-                color: Theme.textMuted
-                font.pixelSize: 12
-                wrapMode: Text.WordWrap
                 Layout.fillWidth: true
+                text: root.subtitle
+                color: Theme.foregroundMuted
+                typescale: MD.Token.typescale.body_small
+                wrapMode: Text.WordWrap
             }
         }
     }

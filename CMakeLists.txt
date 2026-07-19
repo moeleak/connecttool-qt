@@ -58,6 +58,21 @@ endif()
 
 find_package(Qt6 6.11.1 REQUIRED COMPONENTS Gui Qml Quick QuickControls2 Network)
 
+# QmlMaterial supplies the Material Design 3 controls used by the desktop UI.
+# Keep it static so the QML plugin and its assets travel with the application
+# on every platform. Nix injects a pre-fetched source directory; regular CMake
+# builds fetch the same pinned revision on first configure.
+include(FetchContent)
+set(QM_BUILD_EXAMPLE OFF CACHE BOOL "Build QmlMaterial example" FORCE)
+set(QM_BUILD_TESTS OFF CACHE BOOL "Build QmlMaterial tests" FORCE)
+set(QML_MATERIAL_BUILD_TYPE STATIC CACHE STRING "QmlMaterial library type" FORCE)
+FetchContent_Declare(
+    qml_material
+    GIT_REPOSITORY https://github.com/hypengw/QmlMaterial.git
+    GIT_TAG e8b275ba4e9852fe94394d565604d628e1fef03c
+    EXCLUDE_FROM_ALL)
+FetchContent_MakeAvailable(qml_material)
+
 # Read version from git tag if available
 set(CONNECTTOOL_VERSION "1.5.15")
 if(DEFINED ENV{CONNECTTOOL_VERSION})
@@ -78,6 +93,9 @@ find_package(Threads REQUIRED)
 
 qt_policy(SET QTP0004 NEW)
 qt_policy(SET QTP0001 NEW)
+if(QT_KNOWN_POLICY_QTP0005)
+    qt_policy(SET QTP0005 NEW)
+endif()
 
 set(STEAMWORKS_PATH_HINT "${CMAKE_SOURCE_DIR}/steamworks" CACHE PATH "Path to the Steamworks SDK (contains public/ and redistributable_bin)")
 set(STEAMWORKS_SDK_DIR "${CMAKE_SOURCE_DIR}/sdk" CACHE PATH "Optional fallback Steamworks SDK path")
@@ -181,6 +199,14 @@ qt_add_resources(connecttool-qt bundled_fonts
     FILES
         resources/fonts/NotoSansCJKsc-Regular.otf
         resources/fonts/NotoSansCJKsc-Bold.otf)
+
+qt_add_resources(connecttool-qt third_party_notices
+    PREFIX "/licenses"
+    BASE "${CMAKE_SOURCE_DIR}"
+    FILES
+        THIRD_PARTY_NOTICES.md
+        licenses/QmlMaterial-MIT.txt
+        licenses/Apache-2.0.txt)
 
 if(APPLE)
     set_target_properties(connecttool-qt PROPERTIES MACOSX_BUNDLE TRUE)
@@ -294,6 +320,15 @@ if(APPLE)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_SOURCE_DIR}/resources/fonts/LICENSE-NotoSansCJK.txt"
                 "$<TARGET_BUNDLE_DIR:connecttool-qt>/Contents/Resources/LICENSE-NotoSansCJK.txt"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_BUNDLE_DIR:connecttool-qt>/Contents/Resources/licenses"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/THIRD_PARTY_NOTICES.md"
+                "$<TARGET_BUNDLE_DIR:connecttool-qt>/Contents/Resources/THIRD_PARTY_NOTICES.md"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/licenses/QmlMaterial-MIT.txt"
+                "${CMAKE_SOURCE_DIR}/licenses/Apache-2.0.txt"
+                "$<TARGET_BUNDLE_DIR:connecttool-qt>/Contents/Resources/licenses"
         COMMAND install_name_tool -id
                 "@loader_path/../Frameworks/libsteam_api.dylib"
                 "${_steamworks_bundle_frameworks}/libsteam_api.dylib"
@@ -343,12 +378,23 @@ set_source_files_properties(qml/ConnectTool/Theme.qml
 qt_add_qml_module(connecttool-qt
     URI ConnectTool
     VERSION 1.0
+    DEPENDENCIES
+        TARGET qml_material
     QML_FILES
         qml/ConnectTool/Main.qml
         qml/ConnectTool/Theme.qml
+        qml/ConnectTool/NavigationDrawer.qml
         qml/ConnectTool/AppCard.qml
+        qml/ConnectTool/LinkCard.qml
         qml/ConnectTool/StatusPill.qml
         qml/ConnectTool/Avatar.qml
+        qml/ConnectTool/ConnectionPanel.qml
+        qml/ConnectTool/PortField.qml
+        qml/ConnectTool/ChatPanel.qml
+        qml/ConnectTool/ChatMessageDelegate.qml
+        qml/ConnectTool/PeoplePanel.qml
+        qml/ConnectTool/MemberDelegate.qml
+        qml/ConnectTool/FriendDelegate.qml
         qml/ConnectTool/RoomPage.qml
         qml/ConnectTool/LobbyPage.qml
         qml/ConnectTool/NetworkPage.qml
@@ -356,9 +402,12 @@ qt_add_qml_module(connecttool-qt
     RESOURCES
         qml/ConnectTool/GitHub.svg
         qml/ConnectTool/QQ.svg
-        qml/ConnectTool/Menu.svg
         qml/ConnectTool/AppIcon.png
         qml/ConnectTool/notify.wav)
+
+# QmlMaterial is built as a static QML module. Explicitly retaining the plugin
+# pairs with Q_IMPORT_QML_PLUGIN in main.cpp even though Qt itself is shared.
+target_link_libraries(connecttool-qt PRIVATE qml_materialplugin)
 
 if(BUILD_TESTING)
     add_test(NAME qml-smoke COMMAND connecttool-qt --qml-smoke-test)
@@ -396,6 +445,11 @@ else()
     install(TARGETS connecttool-qt RUNTIME DESTINATION bin)
     install(FILES ${STEAMWORKS_RUNTIME_LIBRARIES} DESTINATION bin OPTIONAL)
     install(FILES resources/fonts/LICENSE-NotoSansCJK.txt DESTINATION share/doc/connecttool-qt)
+    install(FILES THIRD_PARTY_NOTICES.md DESTINATION share/doc/connecttool-qt)
+    install(FILES
+        licenses/QmlMaterial-MIT.txt
+        licenses/Apache-2.0.txt
+        DESTINATION share/doc/connecttool-qt/licenses)
 endif()
 if(UNIX AND NOT APPLE)
     install(FILES resources/connecttool.desktop DESTINATION share/applications)

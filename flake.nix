@@ -56,6 +56,12 @@
               steamworksEnvPath
             else
               repoRoot + "/sdk";
+          qmlMaterialSrc = pkgs.fetchgit {
+            url = "https://github.com/hypengw/QmlMaterial.git";
+            rev = "e8b275ba4e9852fe94394d565604d628e1fef03c";
+            hash = "sha256-z0qEi/sl09J+WpGH8DhZqpwxA3+JneDbJQjEN3GCvfc=";
+            fetchLFS = true;
+          };
         in
         {
           default = pkgs.stdenv.mkDerivation rec {
@@ -73,6 +79,8 @@
                 ninja
                 pkg-config
                 git
+                git-lfs
+                spirv-tools
               ]
               ++ lib.optionals (!stdenv.isDarwin) [ qt6.wrapQtAppsHook ]
               ++ lib.optionals stdenv.isDarwin [ darwin.autoSignDarwinBinariesHook ]
@@ -82,6 +90,7 @@
               (with pkgs.qt6; [
                 qtbase
                 qtdeclarative
+                qtshadertools
                 qtsvg
                 qttools
               ])
@@ -92,6 +101,7 @@
             cmakeFlags = [
               "-DSTEAMWORKS_PATH_HINT=${steamworksHint}"
               "-DSTEAMWORKS_SDK_DIR=${steamworksSdkHint}"
+              "-DFETCHCONTENT_SOURCE_DIR_QML_MATERIAL=${qmlMaterialSrc}"
               "-DCMAKE_BUILD_TYPE=Release"
             ];
 

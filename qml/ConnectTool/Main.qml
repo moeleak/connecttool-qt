@@ -1,237 +1,139 @@
 pragma ComponentBehavior: Bound
 
 import QtQuick
-import QtQuick.Controls
-import QtQuick.Controls.Material
 import QtQuick.Layouts
+import QtQuick.Templates as T
+import Qcm.Material as MD
 import ConnectTool
 
-ApplicationWindow {
+MD.ApplicationWindow {
     id: window
 
     width: 1180
     height: 760
     minimumWidth: 980
     minimumHeight: 660
-    visible: true
+    visible: false
     title: qsTr("ConnectTool · Steam P2P")
+    color: Theme.background
 
-    Material.theme: Material.Dark
-    Material.primary: Theme.primary
-    Material.accent: Theme.secondary
+    MD.MProp.textColor: MD.Token.color.on_surface
+    MD.MProp.backgroundColor: MD.Token.color.surface
+    MD.MProp.size.windowClass: MD.Token.window_class.select_type(width)
 
     property int pageIndex: 0
     readonly property var navigation: [
-        { icon: "⌂", title: qsTr("房间"), subtitle: qsTr("连接、聊天与成员") },
-        { icon: "◎", title: qsTr("大厅"), subtitle: qsTr("发现公开房间") },
-        { icon: "◇", title: qsTr("节点"), subtitle: qsTr("中继与网络状态") },
-        { icon: "i", title: qsTr("关于"), subtitle: qsTr("版本、更新与社区") }
+        { icon: MD.Token.icon.meeting_room, title: qsTr("房间"), subtitle: qsTr("连接、聊天与成员") },
+        { icon: MD.Token.icon.travel_explore, title: qsTr("大厅"), subtitle: qsTr("发现公开房间") },
+        { icon: MD.Token.icon.hub, title: qsTr("节点"), subtitle: qsTr("中继与网络状态") },
+        { icon: MD.Token.icon.info, title: qsTr("关于"), subtitle: qsTr("版本、更新与社区") }
     ]
 
-    background: Rectangle {
-        color: Theme.background
-        gradient: Gradient {
-            GradientStop { position: 0; color: "#0c1524" }
-            GradientStop { position: 1; color: Theme.background }
+    Component.onCompleted: {
+        MD.Token.color.useSysColorSM = false
+        MD.Token.color.useSysAccentColor = false
+        MD.Token.color.paletteType = MD.Enum.PaletteTonalSpot
+        MD.Token.color.accentColor = "#20cdb5"
+        MD.Token.themeMode = MD.Enum.Dark
+        visible = true
+    }
+
+    header: MD.Pane {
+        width: window.width
+        implicitHeight: 68
+        horizontalPadding: 14
+        verticalPadding: 8
+        backgroundColor: Theme.surfaceContainer
+        elevation: MD.Token.elevation.level2
+
+        contentItem: RowLayout {
+            spacing: 10
+
+            MD.IconButton {
+                Accessible.name: qsTr("打开导航")
+                mdState.type: MD.Enum.IBtStandard
+                mdState.size: MD.Enum.S
+                icon.name: MD.Token.icon.menu
+                onClicked: navigationDrawer.open()
+            }
+
+            MD.Divider {
+                Layout.fillHeight: true
+                Layout.topMargin: 8
+                Layout.bottomMargin: 8
+                orientation: Qt.Vertical
+            }
+
+            ColumnLayout {
+                spacing: 0
+
+                MD.Text {
+                    text: window.navigation[window.pageIndex].title
+                    color: Theme.foreground
+                    typescale: MD.Token.typescale.title_medium
+                    prominent: true
+                }
+                MD.Text {
+                    text: window.navigation[window.pageIndex].subtitle
+                    color: Theme.foregroundMuted
+                    typescale: MD.Token.typescale.body_small
+                }
+            }
+
+            Item { Layout.fillWidth: true }
         }
     }
 
-    Dialog {
+    MD.Dialog {
         id: adminDialog
-        anchors.centerIn: parent
         title: qsTr("需要管理员权限")
-        modal: true
-        standardButtons: Dialog.Ok
-        width: 400
+        standardButtons: T.DialogButtonBox.Ok
+        width: 420
 
-        Label {
+        MD.Text {
             width: parent.width
             text: qsTr("TUN 模式需要创建和配置虚拟网卡。请允许管理员权限后重试。")
-            color: Theme.text
-            wrapMode: Text.Wrap
+            color: Theme.foreground
+            wrapMode: Text.WordWrap
         }
     }
 
     Connections {
         target: App.session
-        function onAdminPrivilegesRequired() {
-            adminDialog.open()
-        }
+        function onAdminPrivilegesRequired() { adminDialog.open() }
     }
 
-    RowLayout {
+    Connections {
+        target: App
+        function onCopied() { notifications.show(qsTr("已复制到剪贴板"), 2200, 0) }
+    }
+
+    NavigationDrawer {
+        id: navigationDrawer
+        entries: window.navigation
+        currentIndex: window.pageIndex
+        windowWidth: window.width
+        onSelected: index => window.pageIndex = index
+    }
+
+    StackLayout {
         anchors.fill: parent
-        anchors.margins: 14
-        spacing: 14
+        anchors.margins: Theme.pagePadding
+        currentIndex: window.pageIndex
 
-        Rectangle {
-            Layout.fillHeight: true
-            Layout.preferredWidth: 238
-            radius: 18
-            color: Theme.surface
-            border.color: Theme.border
+        RoomPage {}
+        LobbyPage {}
+        NetworkPage {}
+        AboutPage {}
+    }
 
-            ColumnLayout {
-                anchors.fill: parent
-                anchors.margins: 14
-                spacing: 12
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 10
-
-                    Rectangle {
-                        implicitWidth: 46
-                        implicitHeight: 46
-                        radius: 14
-                        gradient: Gradient {
-                            GradientStop { position: 0; color: Theme.primary }
-                            GradientStop { position: 1; color: Theme.secondary }
-                        }
-                        Label {
-                            anchors.centerIn: parent
-                            text: "CT"
-                            color: "#07111c"
-                            font.pixelSize: 16
-                            font.weight: Font.Bold
-                        }
-                    }
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 1
-                        Label {
-                            text: "ConnectTool"
-                            color: Theme.text
-                            font.pixelSize: 17
-                            font.weight: Font.DemiBold
-                        }
-                        Label {
-                            text: "Steam P2P"
-                            color: Theme.textMuted
-                            font.pixelSize: 11
-                        }
-                    }
-                }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    implicitHeight: 1
-                    color: Theme.border
-                }
-
-                Repeater {
-                    model: window.navigation
-
-                    delegate: Button {
-                        id: navigationButton
-                        required property int index
-                        required property var modelData
-
-                        Layout.fillWidth: true
-                        implicitHeight: 58
-                        flat: true
-                        hoverEnabled: true
-                        onClicked: window.pageIndex = navigationButton.index
-
-                        background: Rectangle {
-                            radius: 12
-                            color: window.pageIndex === navigationButton.index
-                                   ? "#173530"
-                                   : (navigationButton.hovered ? Theme.surfaceHover : "transparent")
-                            border.color: window.pageIndex === navigationButton.index
-                                          ? Qt.rgba(Theme.primary.r, Theme.primary.g, Theme.primary.b, 0.5)
-                                          : "transparent"
-                        }
-
-                        contentItem: RowLayout {
-                            spacing: 11
-                            Label {
-                                text: navigationButton.modelData.icon
-                                color: window.pageIndex === navigationButton.index ? Theme.primary : Theme.textMuted
-                                font.pixelSize: 18
-                                Layout.preferredWidth: 24
-                                horizontalAlignment: Text.AlignHCenter
-                            }
-                            ColumnLayout {
-                                Layout.fillWidth: true
-                                spacing: 1
-                                Label {
-                                    text: navigationButton.modelData.title
-                                    color: Theme.text
-                                    font.pixelSize: 14
-                                    font.weight: window.pageIndex === navigationButton.index ? Font.DemiBold : Font.Normal
-                                }
-                                Label {
-                                    text: navigationButton.modelData.subtitle
-                                    color: Theme.textMuted
-                                    font.pixelSize: 10
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Item { Layout.fillHeight: true }
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    implicitHeight: statusColumn.implicitHeight + 20
-                    radius: 12
-                    color: Theme.surfaceRaised
-                    border.color: Theme.border
-
-                    ColumnLayout {
-                        id: statusColumn
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.margins: 10
-                        spacing: 6
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Rectangle {
-                                implicitWidth: 9
-                                implicitHeight: 9
-                                radius: 5
-                                color: App.session.steamReady ? Theme.success : Theme.warning
-                            }
-                            Label {
-                                Layout.fillWidth: true
-                                text: App.session.steamReady ? qsTr("Steam 在线") : qsTr("等待 Steam")
-                                color: Theme.text
-                                font.pixelSize: 12
-                            }
-                            Label {
-                                text: "v" + App.version
-                                color: Theme.textMuted
-                                font.pixelSize: 10
-                            }
-                        }
-                        Label {
-                            Layout.fillWidth: true
-                            text: App.session.status
-                            color: Theme.textMuted
-                            font.pixelSize: 10
-                            wrapMode: Text.Wrap
-                            maximumLineCount: 2
-                            elide: Text.ElideRight
-                        }
-                    }
-                }
-            }
-        }
-
-        StackLayout {
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            currentIndex: window.pageIndex
-
-            RoomPage {}
-            LobbyPage {}
-            NetworkPage {}
-            AboutPage {}
-        }
+    MD.SnakeView {
+        id: notifications
+        z: 1000
+        width: Math.min(parent.width - 32, 460)
+        height: parent.height
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.bottom: parent.bottom
+        bottomToTop: true
     }
 }

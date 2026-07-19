@@ -192,6 +192,7 @@ private:
   void requestUserAttention();
   void setFriendsRefreshing(bool refreshing);
   void updateRelayPing();
+  void updateLobbyLatencyReadiness();
   void handlePinnedMessageMetadata(const QString &payload);
   std::optional<ChatModel::Entry> parsePinnedMessagePayload(const QString &payload) const;
   QString serializePinnedMessage(const ChatModel::Entry &entry) const;
@@ -265,6 +266,8 @@ private:
   QString lastLobbyName_;
   bool friendsRefreshing_ = false;
   bool lobbyRefreshing_ = false;
+  bool localPingLocationReady_ = false;
+  bool lobbyLatencyRefreshPending_ = false;
   std::chrono::steady_clock::time_point lastPingBroadcast_;
   std::chrono::steady_clock::time_point lastRelayPingSample_;
   ConnectionMode connectionMode_ = ConnectionMode::Tun;

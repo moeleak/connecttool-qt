@@ -60,5 +60,6 @@ ApplicationController *ApplicationControllerRegistration::create(QQmlEngine *eng
   Q_ASSERT(engine->thread() == scriptEngine->thread());
   Q_ASSERT(instance_ != nullptr);
   Q_ASSERT(instance_->thread() == engine->thread());
+  QQmlEngine::setObjectOwnership(instance_, QQmlEngine::CppOwnership);
   return instance_;
 }
