@@ -134,26 +134,25 @@ jobs:
           $env:VCINSTALLDIR = Join-Path $vsInstall 'VC'
           $projectDir = (Get-Location).ProviderPath
           $runtime = Join-Path $dest 'bin\runtime'
-          & $windeploy --release --force-openssl `
+          & $windeploy --release --no-compiler-runtime --no-translations `
+            --skip-plugin-types generic,networkinformation,qmltooling `
+            --exclude-plugins qcertonlybackend,qgif,qico,qjpeg,qopensslbackend `
             --dir "$dest\bin" `
             --plugindir "$runtime\plugins" `
             --qml-deploy-dir "$runtime\qml" `
-            --translationdir "$runtime\translations" `
             --qmldir "$projectDir\qml" `
             "$dest\bin\connecttool-qt.exe"
           if ($LASTEXITCODE -ne 0) {
             throw "windeployqt failed with exit code $LASTEXITCODE"
           }
-          $redistTarget = Join-Path $dest 'bin\vc_redist.x64.exe'
-          if (-not (Test-Path $redistTarget)) {
-            $redist = Get-ChildItem -Path (Join-Path $env:VCINSTALLDIR 'Redist\MSVC') -Recurse -Filter 'vc_redist.x64.exe' |
-              Sort-Object FullName -Descending |
-              Select-Object -First 1
-            if (-not $redist) {
-              throw "Unable to locate the Visual C++ Redistributable installer."
-            }
-            Copy-Item $redist.FullName -Destination $redistTarget
+          $crtDirectory = Get-ChildItem -Path (Join-Path $env:VCINSTALLDIR 'Redist\MSVC') -Recurse -Directory |
+            Where-Object { $_.Name -like 'Microsoft.VC*.CRT' -and $_.FullName -match '[\\/]x64[\\/]' } |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $crtDirectory) {
+            throw "Unable to locate the x64 application-local Visual C++ runtime."
           }
+          Copy-Item (Join-Path $crtDirectory.FullName '*.dll') -Destination (Join-Path $dest 'bin') -Force
       - name: Flatten Windows bundle layout
         shell: bash
         run: |
@@ -187,12 +186,17 @@ jobs:
             mv "$dll" "$DEST/"
           done
           rm -rf "${DEST:?}/lib"
-          if [[ -d "$DEST/translations" ]]; then
-            rm -rf "${RUNTIME:?}/translations"
-            mv "$DEST/translations" "$RUNTIME/"
-          elif [[ -d "$RUNTIME/qml/translations" ]]; then
-            :
+          find "$RUNTIME/qml" -type f -name '*.qmltypes' -delete
+          DOCS="$DEST/share/doc/connecttool-qt"
+          if [[ -d "$DOCS" ]]; then
+            mkdir -p "$DEST/licenses"
+            mv "$DOCS/LICENSE-NotoSansCJK.txt" "$DEST/licenses/NotoSansCJK-OFL.txt"
+            mv "$DOCS/THIRD_PARTY_NOTICES.md" "$DEST/licenses/THIRD_PARTY_NOTICES.md"
+            mv "$DOCS/licenses/QmlMaterial-MIT.txt" "$DEST/licenses/QmlMaterial-MIT.txt"
+            mv "$DOCS/licenses/Apache-2.0.txt" "$DEST/licenses/Apache-2.0.txt"
+            rm -rf "${DEST:?}/share"
           fi
+          cp packaging/windows/README.txt "$DEST/README.txt"
           cat > "$DEST/qt.conf" <<'EOF'
           [Paths]
           Prefix = .
@@ -200,7 +204,6 @@ jobs:
           Libraries = .
           Plugins = runtime/plugins
           QmlImports = runtime/qml
-          Translations = runtime/translations
           EOF
       - name: Verify deployed Windows layout
         shell: pwsh
@@ -210,13 +213,35 @@ jobs:
             'connecttool-qt.exe',
             'Qt6Core.dll',
             'Qt6Gui.dll',
+            'Qt6LabsPlatform.dll',
+            'Qt6Network.dll',
+            'Qt6OpenGL.dll',
             'Qt6Qml.dll',
+            'Qt6QmlMeta.dll',
+            'Qt6QmlModels.dll',
+            'Qt6QmlWorkerScript.dll',
             'Qt6Quick.dll',
+            'Qt6QuickControls2.dll',
+            'Qt6QuickLayouts.dll',
+            'Qt6QuickTemplates2.dll',
+            'Qt6Svg.dll',
+            'Qt6Widgets.dll',
             'D3Dcompiler_47.dll',
+            'opengl32sw.dll',
             'steam_api64.dll',
+            'steamwebrtc64.dll',
             'runtime\plugins\platforms\qwindows.dll',
+            'runtime\plugins\imageformats\qsvg.dll',
+            'runtime\plugins\styles\qmodernwindowsstyle.dll',
+            'runtime\plugins\tls\qschannelbackend.dll',
             'runtime\qml\QtQuick\qtquick2plugin.dll',
-            'vc_redist.x64.exe',
+            'MSVCP140.dll',
+            'MSVCP140_ATOMIC_WAIT.dll',
+            'VCRUNTIME140.dll',
+            'VCRUNTIME140_1.dll',
+            'README.txt',
+            'licenses\NotoSansCJK-OFL.txt',
+            'licenses\THIRD_PARTY_NOTICES.md',
             'qt.conf'
           )
           foreach ($relativePath in $required) {
@@ -229,6 +254,25 @@ jobs:
             if (Test-Path (Join-Path $dest $unexpected)) {
               throw "Qt plugin directory was deployed outside runtime/plugins: $unexpected"
             }
+          }
+          $forbidden = @(
+            'runtime\plugins\generic',
+            'runtime\plugins\networkinformation',
+            'runtime\plugins\qmltooling',
+            'runtime\plugins\tls\qcertonlybackend.dll',
+            'runtime\plugins\tls\qopensslbackend.dll',
+            'runtime\translations',
+            'share',
+            'vc_redist.x64.exe'
+          )
+          foreach ($relativePath in $forbidden) {
+            if (Test-Path (Join-Path $dest $relativePath)) {
+              throw "Unneeded Windows runtime content was packaged: $relativePath"
+            }
+          }
+          $typeDescriptions = Get-ChildItem -Path (Join-Path $dest 'runtime\qml') -Recurse -Filter '*.qmltypes'
+          if ($typeDescriptions) {
+            throw "QML tooling metadata was packaged: $($typeDescriptions.FullName -join ', ')"
           }
       - name: Bundle Wintun runtime (Windows)
         shell: pwsh
@@ -366,6 +410,9 @@ jobs:
           macdeployqt "build/connecttool-qt.app" \
             -qmldir="${{ github.workspace }}/qml" \
             -verbose=2
+      - name: Prune unused Qt runtime (macOS)
+        shell: bash
+        run: scripts/package/prune_macos_bundle.sh "build/connecttool-qt.app"
       - name: Bundle Steamworks dylibs (macOS)
         shell: bash
         run: |
@@ -407,6 +454,19 @@ jobs:
           fix_deps "libsteamwebrtc.dylib"
           codesign --force --deep --sign - "$app"
           codesign --verify --deep --strict "$app"
+      - name: Verify deployed macOS bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          app="build/connecttool-qt.app"
+          scripts/package/verify_macos_bundle.sh "$app"
+          screenshot="${RUNNER_TEMP}/connecttool-macos-render.png"
+          log="${RUNNER_TEMP}/connecttool-macos-render.log"
+          "$app/Contents/MacOS/connecttool-qt" \
+            "--qml-screenshot=$screenshot" \
+            "--log-file=$log"
+          cat "$log"
+          test -s "$screenshot"
       - name: Create DMG
         shell: bash
         run: |

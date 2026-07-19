@@ -208,8 +208,7 @@ qt_add_resources(connecttool-qt bundled_fonts
     PREFIX "/fonts"
     BASE "resources/fonts"
     FILES
-        resources/fonts/NotoSansCJKsc-Regular.otf
-        resources/fonts/NotoSansCJKsc-Bold.otf)
+        resources/fonts/NotoSansCJKsc-Regular.otf)
 
 qt_add_resources(connecttool-qt third_party_notices
     PREFIX "/licenses"
