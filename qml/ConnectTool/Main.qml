@@ -13,7 +13,7 @@ MD.ApplicationWindow {
     height: 760
     minimumWidth: 980
     minimumHeight: 660
-    visible: false
+    visible: true
     title: qsTr("ConnectTool · Steam P2P")
     color: Theme.background
 
@@ -35,7 +35,6 @@ MD.ApplicationWindow {
         MD.Token.color.paletteType = MD.Enum.PaletteTonalSpot
         MD.Token.color.accentColor = "#20cdb5"
         MD.Token.themeMode = MD.Enum.Dark
-        visible = true
     }
 
     header: MD.Pane {

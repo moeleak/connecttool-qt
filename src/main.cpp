@@ -1,5 +1,9 @@
 #include "application_controller.h"
+#include "application_diagnostics.h"
 #include "backend.h"
+#if defined(Q_OS_WIN)
+#include "windows_accessibility_guard.h"
+#endif
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -13,16 +17,24 @@
 #include <QQmlApplicationEngine>
 #include <QQmlEngine>
 #include <QQuickWindow>
+#include <QSGRendererInterface>
 #include <QTimer>
 #include <QtQml/QQmlExtensionPlugin>
+
+#include <algorithm>
 
 Q_IMPORT_QML_PLUGIN(Qcm_MaterialPlugin)
 
 namespace {
+QString optionValue(const QStringList &arguments, const QString &prefix) {
+  const auto matchingArgument = std::ranges::find_if(
+      arguments, [&prefix](const QString &argument) { return argument.startsWith(prefix); });
+  return matchingArgument == arguments.end() ? QString{} : matchingArgument->sliced(prefix.size());
+}
+
 void installBundledFonts(QGuiApplication &app) {
   const QStringList fontResources = {
       QStringLiteral(":/fonts/NotoSansCJKsc-Regular.otf"),
-      QStringLiteral(":/fonts/NotoSansCJKsc-Bold.otf"),
   };
 
   QString preferredFamily;
@@ -70,7 +82,18 @@ int main(int argc, char *argv[]) {
 #endif
 
   QGuiApplication app(argc, argv);
+  const QStringList arguments = QCoreApplication::arguments();
+  ApplicationDiagnostics diagnostics(optionValue(arguments, QStringLiteral("--log-file=")));
+  qInfo().noquote() << "ConnectTool" << CONNECTTOOL_VERSION << "starting with Qt" << QT_VERSION_STR
+                    << "log:" << diagnostics.logPath();
+
+#if defined(Q_OS_WIN)
+  WindowsAccessibilityGuard accessibilityGuard;
+  app.installNativeEventFilter(&accessibilityGuard);
+#endif
+
   installBundledFonts(app);
+  qInfo() << "[Startup] Application fonts loaded.";
 #ifdef CONNECTTOOL_NIX_PLUGIN_PATH
   const QStringList nixPluginPaths = QString::fromLocal8Bit(CONNECTTOOL_NIX_PLUGIN_PATH)
                                          .split(QLatin1Char(':'), Qt::SkipEmptyParts);
@@ -82,9 +105,11 @@ int main(int argc, char *argv[]) {
 #endif
 
   app.setWindowIcon(QIcon(QStringLiteral(":/qt/qml/ConnectTool/AppIcon.png")));
+  qInfo() << "[Startup] Constructing application services.";
   Backend backend;
   ApplicationController application(backend);
   ApplicationControllerRegistration::bind(application);
+  qInfo() << "[Startup] Application services constructed.";
 
   QQmlApplicationEngine engine;
   engine.addImportPath(QStringLiteral("qrc:/"));
@@ -100,44 +125,89 @@ int main(int argc, char *argv[]) {
 
   QObject::connect(
       &engine, &QQmlApplicationEngine::objectCreationFailed, &app,
-      []() { QCoreApplication::exit(-1); }, Qt::QueuedConnection);
+      []() {
+        qCritical() << "The QML root object could not be created.";
+        QCoreApplication::exit(EXIT_FAILURE);
+      },
+      Qt::QueuedConnection);
 
+  qInfo() << "[Startup] Loading the QML interface.";
   engine.loadFromModule("ConnectTool", "Main");
+  qInfo() << "[Startup] QML load returned with" << engine.rootObjects().size() << "root object(s).";
 
   bool screenshotRequested = false;
   if (!engine.rootObjects().isEmpty()) {
     if (auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().first())) {
+      window->show();
+#if defined(Q_OS_WIN)
+      window->raise();
+      window->requestActivate();
+#endif
       backend.initializeSound(window);
 
-      const QStringList arguments = QCoreApplication::arguments();
-      const auto optionValue = [&arguments](const QString &prefix) {
-        for (const QString &argument : arguments) {
-          if (argument.startsWith(prefix)) {
-            return argument.sliced(prefix.size());
-          }
-        }
-        return QString{};
-      };
+      QObject::connect(
+          window, &QQuickWindow::frameSwapped, &backend, [&backend]() { backend.startServices(); },
+          Qt::SingleShotConnection);
+      // Some remote-desktop and minimized startup paths do not emit
+      // frameSwapped promptly. This fallback still leaves the event loop time
+      // to expose the window before Steam performs synchronous initialization.
+      QTimer::singleShot(750, &backend, &Backend::startServices);
 
-      const QString screenshotPath =
-          optionValue(QStringLiteral("--qml-screenshot="));
+      QObject::connect(window, &QQuickWindow::sceneGraphError, window,
+                       [](QQuickWindow::SceneGraphError error, const QString &message) {
+                         qCritical().noquote() << "Qt Quick scene graph error"
+                                               << static_cast<int>(error) << ':' << message;
+                       });
+      QObject::connect(
+          window, &QQuickWindow::sceneGraphInitialized, window,
+          [window]() {
+            qInfo() << "Qt Quick scene graph initialized with graphics API"
+                    << static_cast<int>(window->rendererInterface()->graphicsApi());
+          },
+          Qt::DirectConnection);
+
+      const QString screenshotPath = optionValue(arguments, QStringLiteral("--qml-screenshot="));
       if (!screenshotPath.isEmpty()) {
         screenshotRequested = true;
         bool pageIsValid = false;
         const int requestedPage =
-            optionValue(QStringLiteral("--qml-page=")).toInt(&pageIsValid);
+            optionValue(arguments, QStringLiteral("--qml-page=")).toInt(&pageIsValid);
         if (pageIsValid) {
           window->setProperty("pageIndex", qBound(0, requestedPage, 3));
         }
 
-        QTimer::singleShot(1200, window, [window, screenshotPath, &app]() {
-          const QImage image = window->grabWindow();
-          const bool saved = !image.isNull() && image.save(screenshotPath);
-          if (!saved) {
-            qWarning() << "Failed to save QML screenshot to" << screenshotPath;
-          }
-          app.exit(saved ? EXIT_SUCCESS : EXIT_FAILURE);
-        });
+#if defined(Q_OS_WIN)
+        const bool accessibilityProbeRequested =
+            arguments.contains(QStringLiteral("--windows-uia-probe"));
+        if (accessibilityProbeRequested) {
+          QTimer::singleShot(200, window, [&accessibilityGuard, window]() {
+            if (!accessibilityGuard.postProbe(*window)) {
+              qWarning() << "Failed to post the Windows UI Automation probe.";
+            }
+          });
+        }
+        const auto platformProbePassed = [&accessibilityGuard, accessibilityProbeRequested]() {
+          return !accessibilityProbeRequested || accessibilityGuard.blockedEventCount() > 0;
+        };
+#else
+        constexpr bool accessibilityProbeRequested = false;
+        const auto platformProbePassed = []() { return true; };
+#endif
+
+        const int captureDelayMs = accessibilityProbeRequested ? 3000 : 1200;
+        QTimer::singleShot(
+            captureDelayMs, window, [window, screenshotPath, &app, platformProbePassed]() {
+              const QImage image = window->grabWindow();
+              const bool screenshotSaved = !image.isNull() && image.save(screenshotPath);
+              const bool probePassed = platformProbePassed();
+              if (!screenshotSaved) {
+                qWarning() << "Failed to save QML screenshot to" << screenshotPath;
+              }
+              if (!probePassed) {
+                qWarning() << "The Windows UI Automation probe was not intercepted.";
+              }
+              app.exit(screenshotSaved && probePassed ? EXIT_SUCCESS : EXIT_FAILURE);
+            });
       }
     }
   }
@@ -147,5 +217,7 @@ int main(int argc, char *argv[]) {
     return engine.rootObjects().isEmpty() ? EXIT_FAILURE : EXIT_SUCCESS;
   }
 
-  return app.exec();
+  const int result = app.exec();
+  qInfo() << "ConnectTool exiting with code" << result;
+  return result;
 }

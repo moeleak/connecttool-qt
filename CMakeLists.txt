@@ -174,8 +174,10 @@ if(STEAMWORKS_WEBRTC_LIBRARY)
     list(APPEND STEAMWORKS_RUNTIME_LIBRARIES ${STEAMWORKS_WEBRTC_LIBRARY})
 endif()
 
-add_executable(connecttool-qt
+qt_add_executable(connecttool-qt
     src/main.cpp
+    src/application_diagnostics.h
+    src/application_diagnostics.cpp
     src/application_controller.h
     src/application_controller.cpp
     src/platform_environment.cpp
@@ -228,7 +230,10 @@ if(APPLE)
 endif()
 
 if(WIN32)
+    set_target_properties(connecttool-qt PROPERTIES WIN32_EXECUTABLE TRUE)
     target_sources(connecttool-qt PRIVATE
+        src/windows_accessibility_guard.h
+        src/windows_accessibility_guard.cpp
         tun/tun_windows.cpp
         src/firewall_windows.cpp
         resources/connecttool.rc)

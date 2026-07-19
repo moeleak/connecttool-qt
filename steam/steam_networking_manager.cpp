@@ -39,40 +39,48 @@ bool SteamNetworkingManager::initialize() {
     return false;
   }
 
+  ISteamNetworkingUtils *networkingUtils = SteamNetworkingUtils();
+  ISteamNetworkingSockets *networkingSockets = SteamNetworkingSockets();
+  if (!networkingUtils || !networkingSockets) {
+    std::cerr << "Steam networking interfaces are unavailable" << std::endl;
+    instance = nullptr;
+    return false;
+  }
+
   // 【新增】开启详细日志
-  SteamNetworkingUtils()->SetDebugOutputFunction(
+  networkingUtils->SetDebugOutputFunction(
       k_ESteamNetworkingSocketsDebugOutputType_Msg,
       [](ESteamNetworkingSocketsDebugOutputType, const char *pszMsg) {
         std::cout << "[SteamNet] " << pszMsg << std::endl;
       });
 
   int32 logLevel = k_ESteamNetworkingSocketsDebugOutputType_Verbose;
-  SteamNetworkingUtils()->SetConfigValue(k_ESteamNetworkingConfig_LogLevel_P2PRendezvous,
+  networkingUtils->SetConfigValue(k_ESteamNetworkingConfig_LogLevel_P2PRendezvous,
                                          k_ESteamNetworkingConfig_Global, 0,
                                          k_ESteamNetworkingConfig_Int32, &logLevel);
 
   // Increase default reliable send buffer to better handle large bursts
   int32 sendBufferSize = 2 * 1024 * 1024;
-  SteamNetworkingUtils()->SetConfigValue(k_ESteamNetworkingConfig_SendBufferSize,
+  networkingUtils->SetConfigValue(k_ESteamNetworkingConfig_SendBufferSize,
                                          k_ESteamNetworkingConfig_Global, 0,
                                          k_ESteamNetworkingConfig_Int32, &sendBufferSize);
 
   // Receive buffers tuned for moderate bandwidth to avoid runaway queues
   int32 recvBufferSize = 2 * 1024 * 1024; // 2 MB
-  SteamNetworkingUtils()->SetConfigValue(k_ESteamNetworkingConfig_RecvBufferSize,
+  networkingUtils->SetConfigValue(k_ESteamNetworkingConfig_RecvBufferSize,
                                          k_ESteamNetworkingConfig_Global, 0,
                                          k_ESteamNetworkingConfig_Int32, &recvBufferSize);
   int32 recvBufferMsgs = 2048;
-  SteamNetworkingUtils()->SetConfigValue(k_ESteamNetworkingConfig_RecvBufferMessages,
+  networkingUtils->SetConfigValue(k_ESteamNetworkingConfig_RecvBufferMessages,
                                          k_ESteamNetworkingConfig_Global, 0,
                                          k_ESteamNetworkingConfig_Int32, &recvBufferMsgs);
 
   // Cap send rate to a conservative value to keep reliable window stable
   int32 sendRate = 1024 * 1024; // ~1000 KB/s
-  SteamNetworkingUtils()->SetConfigValue(k_ESteamNetworkingConfig_SendRateMin,
+  networkingUtils->SetConfigValue(k_ESteamNetworkingConfig_SendRateMin,
                                          k_ESteamNetworkingConfig_Global, 0,
                                          k_ESteamNetworkingConfig_Int32, &sendRate);
-  SteamNetworkingUtils()->SetConfigValue(k_ESteamNetworkingConfig_SendRateMax,
+  networkingUtils->SetConfigValue(k_ESteamNetworkingConfig_SendRateMax,
                                          k_ESteamNetworkingConfig_Global, 0,
                                          k_ESteamNetworkingConfig_Int32, &sendRate);
 
@@ -80,16 +88,16 @@ bool SteamNetworkingManager::initialize() {
   // based on measured pings in applyTransportPreference.
   int32 sdrPenaltyDefault = 0;
   int32 icePenaltyDefault = 0;
-  SteamNetworkingUtils()->SetConfigValue(k_ESteamNetworkingConfig_P2P_Transport_SDR_Penalty,
+  networkingUtils->SetConfigValue(k_ESteamNetworkingConfig_P2P_Transport_SDR_Penalty,
                                          k_ESteamNetworkingConfig_Global, 0,
                                          k_ESteamNetworkingConfig_Int32, &sdrPenaltyDefault);
-  SteamNetworkingUtils()->SetConfigValue(k_ESteamNetworkingConfig_P2P_Transport_ICE_Penalty,
+  networkingUtils->SetConfigValue(k_ESteamNetworkingConfig_P2P_Transport_ICE_Penalty,
                                          k_ESteamNetworkingConfig_Global, 0,
                                          k_ESteamNetworkingConfig_Int32, &icePenaltyDefault);
 
   // Disable Nagle to reduce latency for tunneled traffic
   int32 nagleTime = 0;
-  SteamNetworkingUtils()->SetConfigValue(k_ESteamNetworkingConfig_NagleTime,
+  networkingUtils->SetConfigValue(k_ESteamNetworkingConfig_NagleTime,
                                          k_ESteamNetworkingConfig_Global, 0,
                                          k_ESteamNetworkingConfig_Int32, &nagleTime);
 
@@ -102,7 +110,7 @@ bool SteamNetworkingManager::initialize() {
   // 默认情况下 Steam 可能会保守地只允许 LAN，这里设置为 "All" 允许公网 P2P
   int32 nIceEnable = k_nSteamNetworkingConfig_P2P_Transport_ICE_Enable_Public |
                      k_nSteamNetworkingConfig_P2P_Transport_ICE_Enable_Private;
-  SteamNetworkingUtils()->SetConfigValue(
+  networkingUtils->SetConfigValue(
       k_ESteamNetworkingConfig_P2P_Transport_ICE_Enable,
       k_ESteamNetworkingConfig_Global, // <--- 关键：作用域选 Global
       0,                               // Global 时此参数填 0
@@ -112,22 +120,22 @@ bool SteamNetworkingManager::initialize() {
   // 如果你铁了心不想走中继，可以给中继路径增加巨大的虚拟延迟惩罚
   // 这样只有在直连完全打不通（比如防火墙太严格）时，Steam 才会无奈选择中继
   int32 nSdrPenalty = 0; // 允许中继正常参与路由选择，避免直连打不通时吞吐骤降
-  SteamNetworkingUtils()->SetConfigValue(k_ESteamNetworkingConfig_P2P_Transport_SDR_Penalty,
+  networkingUtils->SetConfigValue(k_ESteamNetworkingConfig_P2P_Transport_SDR_Penalty,
                                          k_ESteamNetworkingConfig_Global, 0,
                                          k_ESteamNetworkingConfig_Int32, &nSdrPenalty);
 
   // Allow connections from IPs without authentication
   int32 allowWithoutAuth = 2;
-  SteamNetworkingUtils()->SetConfigValue(k_ESteamNetworkingConfig_IP_AllowWithoutAuth,
+  networkingUtils->SetConfigValue(k_ESteamNetworkingConfig_IP_AllowWithoutAuth,
                                          k_ESteamNetworkingConfig_Global, 0,
                                          k_ESteamNetworkingConfig_Int32, &allowWithoutAuth);
 
   // Create callbacks after Steam API init
-  SteamNetworkingUtils()->InitRelayNetworkAccess();
-  SteamNetworkingUtils()->SetGlobalCallback_SteamNetConnectionStatusChanged(
+  networkingUtils->InitRelayNetworkAccess();
+  networkingUtils->SetGlobalCallback_SteamNetConnectionStatusChanged(
       OnSteamNetConnectionStatusChanged);
 
-  m_pInterface = SteamNetworkingSockets();
+  m_pInterface = networkingSockets;
 
   // Check if callbacks are registered
   std::cout << "Steam Networking Manager initialized successfully" << std::endl;

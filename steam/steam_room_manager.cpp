@@ -385,7 +385,9 @@ SteamRoomManager::SteamRoomManager(SteamNetworkingManager *networkingManager)
 
   // Clear Rich Presence on initialization to prevent "Invite to game" showing
   // when not in a lobby
-  SteamFriends()->ClearRichPresence();
+  if (ISteamFriends *friends = SteamFriends()) {
+    friends->ClearRichPresence();
+  }
 }
 
 void SteamRoomManager::setVpnMode(bool enabled,
@@ -456,7 +458,9 @@ void SteamRoomManager::leaveLobby() {
     remotePings_.clear();
 
     // Clear Rich Presence when leaving lobby
-    SteamFriends()->ClearRichPresence();
+    if (ISteamFriends *friends = SteamFriends()) {
+      friends->ClearRichPresence();
+    }
   }
 }
 

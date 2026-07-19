@@ -138,8 +138,6 @@ Backend::Backend(QObject *parent)
   connect(&updateController_, &UpdateController::downloadChanged, this,
           &Backend::updateDownloadChanged);
 
-  connecttool::platform::prepareSteamEnvironment();
-
   workGuard_ =
       std::make_unique<boost::asio::executor_work_guard<boost::asio::io_context::executor_type>>(
           boost::asio::make_work_guard(ioContext_));
@@ -194,17 +192,6 @@ Backend::Backend(QObject *parent)
       emit inviteCooldownChanged();
     }
   });
-
-  tryInitializeSteam();
-
-#ifdef Q_OS_MACOS
-  QTimer::singleShot(0, this, &Backend::ensureTunHelperInstalled);
-#endif
-
-  callbackTimer_.start(16);
-  slowTimer_.start(15000);
-  steamCheckTimer_.start(3000);
-  cooldownTimer_.start(1000);
 
   updateStatus();
 }
@@ -265,6 +252,24 @@ bool Backend::isConnected() const {
     return vpnConnected_;
   }
   return steamManager_ && steamManager_->isConnected();
+}
+
+void Backend::startServices() {
+  if (std::exchange(servicesStarted_, true)) {
+    return;
+  }
+
+  qInfo() << "[Startup] Starting background and Steam services after the UI is visible.";
+  tryInitializeSteam();
+
+#ifdef Q_OS_MACOS
+  QTimer::singleShot(0, this, &Backend::ensureTunHelperInstalled);
+#endif
+
+  callbackTimer_.start(16);
+  slowTimer_.start(15000);
+  steamCheckTimer_.start(3000);
+  cooldownTimer_.start(1000);
 }
 
 QString Backend::lobbyId() const {
@@ -362,12 +367,14 @@ bool Backend::tryInitializeSteam() {
 
   connecttool::platform::prepareSteamEnvironment();
 
+  qInfo() << "[Startup] Calling SteamAPI_Init.";
   steamReady_ = SteamAPI_Init();
   if (!steamReady_) {
     status_ = tr("无法初始化 Steam API，请确认客户端已登录。");
     emit stateChanged();
     return false;
   }
+  qInfo() << "[Startup] Steam API initialized.";
   refreshSelfSteamId();
 
   if (SteamClient()) {
@@ -382,6 +389,7 @@ bool Backend::tryInitializeSteam() {
   emit roomNameChanged();
 
   steamManager_ = std::make_unique<SteamNetworkingManager>();
+  qInfo() << "[Startup] Initializing Steam networking interfaces.";
   if (!steamManager_->initialize()) {
     status_ = tr("Steam 网络初始化失败。");
     steamReady_ = false;
@@ -390,7 +398,9 @@ bool Backend::tryInitializeSteam() {
     return false;
   }
 
+  qInfo() << "[Startup] Registering Steam lobby callbacks.";
   roomManager_ = std::make_unique<SteamRoomManager>(steamManager_.get());
+  qInfo() << "[Startup] Steam lobby callbacks registered.";
   steamManager_->setRoomManager(roomManager_.get());
   roomManager_->setAdvertisedMode(inTunMode());
   roomManager_->setLobbyName(roomName_.toStdString());
@@ -438,6 +448,7 @@ bool Backend::tryInitializeSteam() {
 
   steamManager_->setMessageHandlerDependencies(ioContext_, server_, localPort_, localBindPort_);
   steamManager_->startMessageHandler();
+  qInfo() << "[Startup] Steam message handler started.";
 
   refreshSelfSteamId();
   refreshFriends();
@@ -445,6 +456,7 @@ bool Backend::tryInitializeSteam() {
   refreshHostId();
   updateStatus();
   emit stateChanged();
+  qInfo() << "[Startup] Steam services are ready.";
   return true;
 }
 

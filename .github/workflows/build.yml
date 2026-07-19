@@ -85,7 +85,7 @@ jobs:
             throw "Steamworks redistributable not found at $lib"
           }
       - name: Configure CMake
-        run: cmake -S . -B build -A x64 "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
+        run: cmake -S . -B build -A x64
       - name: Build
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
       - name: Validate QML
@@ -123,8 +123,37 @@ jobs:
           if (-not $windeploy) {
             throw "Unable to locate windeployqt.exe. Checked Qt6_DIR and PATH."
           }
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path $vswhere)) {
+            throw "Unable to locate vswhere.exe."
+          }
+          $vsInstall = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vsInstall) {
+            throw "Unable to locate the Visual C++ toolchain."
+          }
+          $env:VCINSTALLDIR = Join-Path $vsInstall 'VC'
           $projectDir = (Get-Location).ProviderPath
-          & $windeploy --release --force-openssl --dir "$dest\bin" --qmldir "$projectDir\qml" "$dest\bin\connecttool-qt.exe"
+          $runtime = Join-Path $dest 'bin\runtime'
+          & $windeploy --release --force-openssl `
+            --dir "$dest\bin" `
+            --plugindir "$runtime\plugins" `
+            --qml-deploy-dir "$runtime\qml" `
+            --translationdir "$runtime\translations" `
+            --qmldir "$projectDir\qml" `
+            "$dest\bin\connecttool-qt.exe"
+          if ($LASTEXITCODE -ne 0) {
+            throw "windeployqt failed with exit code $LASTEXITCODE"
+          }
+          $redistTarget = Join-Path $dest 'bin\vc_redist.x64.exe'
+          if (-not (Test-Path $redistTarget)) {
+            $redist = Get-ChildItem -Path (Join-Path $env:VCINSTALLDIR 'Redist\MSVC') -Recurse -Filter 'vc_redist.x64.exe' |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1
+            if (-not $redist) {
+              throw "Unable to locate the Visual C++ Redistributable installer."
+            }
+            Copy-Item $redist.FullName -Destination $redistTarget
+          }
       - name: Flatten Windows bundle layout
         shell: bash
         run: |
@@ -173,6 +202,34 @@ jobs:
           QmlImports = runtime/qml
           Translations = runtime/translations
           EOF
+      - name: Verify deployed Windows layout
+        shell: pwsh
+        run: |
+          $dest = Join-Path $env:GITHUB_WORKSPACE 'install'
+          $required = @(
+            'connecttool-qt.exe',
+            'Qt6Core.dll',
+            'Qt6Gui.dll',
+            'Qt6Qml.dll',
+            'Qt6Quick.dll',
+            'D3Dcompiler_47.dll',
+            'steam_api64.dll',
+            'runtime\plugins\platforms\qwindows.dll',
+            'runtime\qml\QtQuick\qtquick2plugin.dll',
+            'vc_redist.x64.exe',
+            'qt.conf'
+          )
+          foreach ($relativePath in $required) {
+            $path = Join-Path $dest $relativePath
+            if (-not (Test-Path $path -PathType Leaf)) {
+              throw "Required Windows runtime file is missing: $relativePath"
+            }
+          }
+          foreach ($unexpected in @('platforms', 'imageformats', 'styles', 'tls')) {
+            if (Test-Path (Join-Path $dest $unexpected)) {
+              throw "Qt plugin directory was deployed outside runtime/plugins: $unexpected"
+            }
+          }
       - name: Bundle Wintun runtime (Windows)
         shell: pwsh
         run: |
@@ -186,21 +243,29 @@ jobs:
             throw "wintun.dll not found in downloaded archive"
           }
           Copy-Item $dll.FullName -Destination (Join-Path $dest 'wintun.dll') -Force
-      - name: Smoke test deployed Windows bundle
+      - name: Render-test deployed Windows bundle
         shell: pwsh
         run: |
-          $env:QT_QPA_PLATFORM = 'offscreen'
+          Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
+          $env:QSG_INFO = '1'
           $exe = Join-Path $env:GITHUB_WORKSPACE 'install\connecttool-qt.exe'
-          $process = Start-Process -FilePath $exe -ArgumentList '--qml-smoke-test' -Wait -PassThru
-          if ($process.ExitCode -ne 0) {
-            throw "Deployed Windows bundle smoke test failed with exit code $($process.ExitCode)"
+          $screenshot = Join-Path $env:RUNNER_TEMP 'connecttool-render-test.png'
+          $log = Join-Path $env:RUNNER_TEMP 'connecttool-render-test.log'
+          $arguments = @(
+            "--qml-screenshot=$screenshot",
+            '--windows-uia-probe',
+            "--log-file=$log"
+          )
+          $process = Start-Process -FilePath $exe -ArgumentList $arguments -Wait -PassThru
+          if (Test-Path $log) {
+            Get-Content $log
           }
-      - name: Remove MSVC redistributable installer (Windows)
-        shell: bash
-        run: |
-          set -euo pipefail
-          DEST="${{ github.workspace }}/install"
-          rm -f "$DEST/vc_redist.x64.exe"
+          if ($process.ExitCode -ne 0) {
+            throw "Deployed Windows render test failed with exit code $($process.ExitCode)"
+          }
+          if (-not (Test-Path $screenshot -PathType Leaf) -or (Get-Item $screenshot).Length -eq 0) {
+            throw "Deployed Windows render test did not produce a screenshot"
+          }
       - name: Package artifact
         id: package
         shell: bash
