@@ -4,6 +4,15 @@ project(ConnectToolQt LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Xcode 16's libc++ still gates C++20 stop_token/jthread behind its
+# experimental-library switch. Keep the standard API on Apple platforms
+# instead of maintaining a project-local threading fallback.
+if(APPLE AND CMAKE_CXX_COMPILER_ID STREQUAL "AppleClang")
+    add_compile_options(-fexperimental-library)
+    add_link_options(-fexperimental-library)
+endif()
+
 # No target currently uses C++ modules. CMake otherwise enables dependency
 # scanning for C++23, and clang-scan-deps loses Nix's libc++ include paths on
 # Darwin because it bypasses part of the compiler wrapper.
@@ -74,7 +83,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(qml_material)
 
 # Read version from git tag if available
-set(CONNECTTOOL_VERSION "1.5.15")
+set(CONNECTTOOL_VERSION "1.6.0-alpha.1")
 if(DEFINED ENV{CONNECTTOOL_VERSION})
     set(CONNECTTOOL_VERSION "$ENV{CONNECTTOOL_VERSION}")
 endif()

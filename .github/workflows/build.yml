@@ -19,30 +19,27 @@ env:
   BUILD_TYPE: Release
   BOOST_VERSION: "1.84.0"
   QT_VERSION: "6.11.1"
+  AQT_SOURCE: "git+https://github.com/miurahr/aqtinstall.git@5be32a75a81513792d95f13065b72cac3381c612"
 jobs:
   build:
     runs-on: windows-latest
     name: Build (Windows)
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
-      - name: Setup Ninja
-        uses: seanmiddleditch/gha-setup-ninja@v3
-      - name: Setup MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
           version: "${{ env.QT_VERSION }}"
           arch: win64_msvc2022_64
-          modules: qtshadertools
+          modules: qtshadertools qttasktree
+          aqtsource: "${{ env.AQT_SOURCE }}"
           cache: true
+      - name: Install pkg-config
+        shell: pwsh
+        run: choco install pkgconfiglite --version=0.28 --yes --no-progress
       - name: Download Boost headers
         shell: pwsh
         run: |
@@ -88,11 +85,11 @@ jobs:
             throw "Steamworks redistributable not found at $lib"
           }
       - name: Configure CMake
-        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }} -DCMAKE_C_COMPILER=cl.exe -DCMAKE_CXX_COMPILER=cl.exe -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+        run: cmake -S . -B build -A x64 "-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded"
       - name: Build
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
       - name: Validate QML
-        run: cmake --build build --config ${{ env.BUILD_TYPE }} --target all_qmllint
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --target connecttool-qt_qmllint
       - name: Test
         run: ctest --test-dir build --build-config ${{ env.BUILD_TYPE }} --output-on-failure
       - name: Install
@@ -143,26 +140,26 @@ jobs:
             rmdir "$DEST/bin"
           fi
           if [[ -d "$DEST/qml" ]]; then
-            rm -rf "$RUNTIME/qml"
+            rm -rf "${RUNTIME:?}/qml"
             mv "$DEST/qml" "$RUNTIME/"
           elif [[ -d "$DEST/lib/qt-6/qml" ]]; then
             mkdir -p "$RUNTIME/qml"
             cp -R "$DEST/lib/qt-6/qml"/. "$RUNTIME/qml/"
           fi
           if [[ -d "$DEST/plugins" ]]; then
-            rm -rf "$RUNTIME/plugins"
+            rm -rf "${RUNTIME:?}/plugins"
             mv "$DEST/plugins" "$RUNTIME/"
           elif [[ -d "$DEST/lib/qt-6/plugins" ]]; then
-            rm -rf "$RUNTIME/plugins"
+            rm -rf "${RUNTIME:?}/plugins"
             cp -R "$DEST/lib/qt-6/plugins" "$RUNTIME/plugins"
           fi
           shopt -s nullglob
           for dll in "$DEST"/lib/*.dll; do
             mv "$dll" "$DEST/"
           done
-          rm -rf "$DEST/lib"
+          rm -rf "${DEST:?}/lib"
           if [[ -d "$DEST/translations" ]]; then
-            rm -rf "$RUNTIME/translations"
+            rm -rf "${RUNTIME:?}/translations"
             mv "$DEST/translations" "$RUNTIME/"
           elif [[ -d "$RUNTIME/qml/translations" ]]; then
             :
@@ -189,6 +186,15 @@ jobs:
             throw "wintun.dll not found in downloaded archive"
           }
           Copy-Item $dll.FullName -Destination (Join-Path $dest 'wintun.dll') -Force
+      - name: Smoke test deployed Windows bundle
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'install\connecttool-qt.exe'
+          $process = Start-Process -FilePath $exe -ArgumentList '--qml-smoke-test' -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Deployed Windows bundle smoke test failed with exit code $($process.ExitCode)"
+          }
       - name: Remove MSVC redistributable installer (Windows)
         shell: bash
         run: |
@@ -206,7 +212,7 @@ jobs:
           cp -R "${{ github.workspace }}/install"/. "$DEST/"
           echo "artifact_dir=$DEST" >> "$GITHUB_OUTPUT"
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: connecttool-qt-windows-x86_64
           path: ${{ steps.package.outputs.artifact_dir }}
@@ -216,17 +222,16 @@ jobs:
     name: Build (macOS)
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
-      - name: Setup Ninja
-        uses: seanmiddleditch/gha-setup-ninja@v3
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
           version: "${{ env.QT_VERSION }}"
           arch: clang_64
-          modules: qtshadertools
+          modules: qtshadertools qttasktree
+          aqtsource: "${{ env.AQT_SOURCE }}"
           cache: true
       - name: Download Boost headers
         shell: bash
@@ -278,14 +283,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cmake -S . -B build -G Ninja \
+          cmake -S . -B build \
+            -G Ninja \
             -DCMAKE_BUILD_TYPE="${{ env.BUILD_TYPE }}" \
             -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}" \
             -DCMAKE_OSX_ARCHITECTURES=x86_64
       - name: Build
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
       - name: Validate QML
-        run: cmake --build build --config ${{ env.BUILD_TYPE }} --target all_qmllint
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --target connecttool-qt_qmllint
       - name: Test
         run: ctest --test-dir build --build-config ${{ env.BUILD_TYPE }} --output-on-failure
       - name: Deploy Qt runtime (macOS)
@@ -353,7 +359,7 @@ jobs:
             "$dmg_path"
           rm -rf "$dmg_dir"
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: connecttool-qt-macos-x86_64
           path: dist/connecttool-qt-macos-x86_64.dmg
@@ -363,7 +369,7 @@ jobs:
     name: Build (Linux AppImage)
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           submodules: recursive
       - name: Install build dependencies
@@ -400,9 +406,8 @@ jobs:
         with:
           version: "${{ env.QT_VERSION }}"
           arch: linux_gcc_64
-          modules: qtshadertools qtwaylandcompositor
-          archieves: qtwayland
-          aqtsource: "git+https://github.com/miurahr/aqtinstall.git"
+          modules: qtshadertools qttasktree qtwaylandcompositor
+          aqtsource: "${{ env.AQT_SOURCE }}"
           cache: true
       - name: Download Boost headers
         shell: bash
@@ -460,7 +465,7 @@ jobs:
       - name: Build (Linux)
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
       - name: Validate QML
-        run: cmake --build build --config ${{ env.BUILD_TYPE }} --target all_qmllint
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --target connecttool-qt_qmllint
       - name: Test
         run: ctest --test-dir build --build-config ${{ env.BUILD_TYPE }} --output-on-failure
       - name: Install (Linux)
@@ -500,7 +505,7 @@ jobs:
           cp "${appimage[0]}" dist/connecttool-qt-linux-x86_64.AppImage
           echo "artifact_path=dist/connecttool-qt-linux-x86_64.AppImage" >> "$GITHUB_OUTPUT"
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: connecttool-qt-linux-x86_64
           path: ${{ steps.package.outputs.artifact_path }}
@@ -511,7 +516,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.ref_type == 'tag'
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: dist
       - name: Create release archives
@@ -533,10 +538,14 @@ jobs:
             fi
           done
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
-          name: ${{ github.ref_name }}
+          name: ${{ contains(github.ref_name, '-alpha') && 'alpha' || github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-alpha') }}
+          make_latest: ${{ contains(github.ref_name, '-alpha') && 'false' || 'legacy' }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             dist/**/*.zip
             dist/**/*.dmg
