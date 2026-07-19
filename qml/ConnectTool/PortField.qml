@@ -11,7 +11,7 @@ MD.TextField {
     property int maximum: 65535
     signal valueEdited(int value)
 
-    type: MD.Enum.TextFieldOutlined
+    type: MD.Enum.TextFieldFilled
     mdState.dense: true
     selectByMouse: true
     horizontalAlignment: TextInput.AlignHCenter

@@ -36,7 +36,7 @@ AppCard {
             text: App.session.joinTarget
             enabled: !root.sessionActive
             selectByMouse: true
-            type: MD.Enum.TextFieldOutlined
+            type: MD.Enum.TextFieldFilled
             mdState.dense: true
             onTextEdited: App.session.joinTarget = text
             onAccepted: {
