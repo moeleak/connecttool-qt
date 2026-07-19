@@ -233,6 +233,8 @@ if(WIN32)
     target_sources(connecttool-qt PRIVATE
         src/windows_accessibility_guard.h
         src/windows_accessibility_guard.cpp
+        src/windows_renderer_supervisor.h
+        src/windows_renderer_supervisor.cpp
         tun/tun_windows.cpp
         src/firewall_windows.cpp
         resources/connecttool.rc)

@@ -263,7 +263,8 @@ jobs:
             'runtime\plugins\tls\qopensslbackend.dll',
             'runtime\translations',
             'share',
-            'vc_redist.x64.exe'
+            'vc_redist.x64.exe',
+            'ConnectTool-Safe-Mode.cmd'
           )
           foreach ($relativePath in $forbidden) {
             if (Test-Path (Join-Path $dest $relativePath)) {
@@ -309,6 +310,35 @@ jobs:
           }
           if (-not (Test-Path $screenshot -PathType Leaf) -or (Get-Item $screenshot).Length -eq 0) {
             throw "Deployed Windows render test did not produce a screenshot"
+          }
+          if (-not (Select-String -Path $log -Pattern 'Renderer preference: automatic')) {
+            throw "Deployed Windows render test did not use automatic renderer selection"
+          }
+          if (-not (Select-String -Path $log -Pattern 'graphics API 4')) {
+            throw "The compatible path did not retain the normal D3D11 renderer"
+          }
+          $fallbackScreenshot = Join-Path $env:RUNNER_TEMP 'connecttool-fallback-render-test.png'
+          $fallbackLog = Join-Path $env:RUNNER_TEMP 'connecttool-fallback-render-test.log'
+          $fallbackProcess = Start-Process -FilePath $exe -ArgumentList @(
+            '--simulate-renderer-startup-failure',
+            "--qml-screenshot=$fallbackScreenshot",
+            "--log-file=$fallbackLog"
+          ) -Wait -PassThru
+          if (Test-Path $fallbackLog) {
+            Get-Content $fallbackLog
+          }
+          if ($fallbackProcess.ExitCode -ne 0) {
+            throw "Automatic renderer fallback failed with exit code $($fallbackProcess.ExitCode)"
+          }
+          if (-not (Test-Path $fallbackScreenshot -PathType Leaf) -or
+              (Get-Item $fallbackScreenshot).Length -eq 0) {
+            throw "Automatic software fallback did not produce a screenshot"
+          }
+          if (-not (Select-String -Path $fallbackLog -Pattern 'Renderer preference: software')) {
+            throw "Automatic renderer fallback did not select the software backend"
+          }
+          if (-not (Select-String -Path $fallbackLog -Pattern 'graphics API 1')) {
+            throw "Automatic renderer fallback did not initialize Qt's software scene graph"
           }
       - name: Package artifact
         id: package

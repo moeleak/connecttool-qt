@@ -2,6 +2,8 @@ ConnectTool alpha（Windows x86_64）
 ==================================
 
 直接双击 connecttool-qt.exe 启动，无需另行安装 Visual C++ 运行库。
+程序会先尝试系统默认图形渲染；如果首帧前崩溃或超时，
+同一个 connecttool-qt.exe 会自动切换到 Qt 软件渲染。
 
 目录说明：
 - connecttool-qt.exe、Qt6*.dll、steam*.dll：程序及其直接运行依赖

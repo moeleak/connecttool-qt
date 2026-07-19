@@ -81,4 +81,8 @@ Windows portable builds create `logs/connecttool.log` beside the executable.
 When that directory is not writable, logging falls back to Qt's per-user local
 application-data directory. Steam initialization starts only after the first Qt
 Quick frame, so Steam client or relay initialization cannot prevent the main
-window from being exposed.
+window from being exposed. On Windows, the executable supervises its own first
+frame: it keeps the platform-default renderer when startup succeeds, and
+automatically relaunches the same executable with Qt's software scene graph if
+the renderer exits or times out before that frame. No secondary launcher is
+packaged.

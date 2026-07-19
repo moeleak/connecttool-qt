@@ -3,6 +3,7 @@
 #include "backend.h"
 #if defined(Q_OS_WIN)
 #include "windows_accessibility_guard.h"
+#include "windows_renderer_supervisor.h"
 #endif
 
 #include <QCoreApplication>
@@ -22,10 +23,24 @@
 #include <QtQml/QQmlExtensionPlugin>
 
 #include <algorithm>
+#include <span>
+#include <string_view>
 
 Q_IMPORT_QML_PLUGIN(Qcm_MaterialPlugin)
 
 namespace {
+[[nodiscard]] bool configureGraphicsBackend(std::span<char *> arguments) {
+  const bool softwareBackendRequested =
+      std::ranges::any_of(arguments, [](const char *argument) {
+        return argument != nullptr && std::string_view{argument} == "--software-renderer";
+      });
+  if (softwareBackendRequested) {
+    QQuickWindow::setGraphicsApi(QSGRendererInterface::Software);
+    return true;
+  }
+  return false;
+}
+
 QString optionValue(const QStringList &arguments, const QString &prefix) {
   const auto matchingArgument = std::ranges::find_if(
       arguments, [&prefix](const QString &argument) { return argument.startsWith(prefix); });
@@ -69,8 +84,18 @@ void installBundledFonts(QGuiApplication &app) {
 } // namespace
 
 int main(int argc, char *argv[]) {
+#if defined(Q_OS_WIN)
+  if (const auto supervisorExit =
+          connecttool::windows::superviseRendererStartup()) {
+    return *supervisorExit;
+  }
+#endif
+
   QCoreApplication::setOrganizationName(QStringLiteral("ConnectTool"));
   QCoreApplication::setApplicationName(QStringLiteral("ConnectTool"));
+
+  const bool softwareRenderer = configureGraphicsBackend(
+      std::span<char *>{argv, static_cast<std::size_t>(argc)});
 
 #if defined(Q_OS_WIN)
   if (const auto osVersion = QOperatingSystemVersion::current().version();
@@ -86,6 +111,10 @@ int main(int argc, char *argv[]) {
   ApplicationDiagnostics diagnostics(optionValue(arguments, QStringLiteral("--log-file=")));
   qInfo().noquote() << "ConnectTool" << CONNECTTOOL_VERSION << "starting with Qt" << QT_VERSION_STR
                     << "log:" << diagnostics.logPath();
+  qInfo().noquote()
+      << "[Startup] Renderer preference:"
+      << (softwareRenderer ? QStringLiteral("software")
+                           : QStringLiteral("automatic"));
 
 #if defined(Q_OS_WIN)
   WindowsAccessibilityGuard accessibilityGuard;
@@ -146,12 +175,14 @@ int main(int argc, char *argv[]) {
       backend.initializeSound(window);
 
       QObject::connect(
-          window, &QQuickWindow::frameSwapped, &backend, [&backend]() { backend.startServices(); },
+          window, &QQuickWindow::frameSwapped, &backend,
+          [&backend]() {
+#if defined(Q_OS_WIN)
+            connecttool::windows::signalRendererReady();
+#endif
+            backend.startServices();
+          },
           Qt::SingleShotConnection);
-      // Some remote-desktop and minimized startup paths do not emit
-      // frameSwapped promptly. This fallback still leaves the event loop time
-      // to expose the window before Steam performs synchronous initialization.
-      QTimer::singleShot(750, &backend, &Backend::startServices);
 
       QObject::connect(window, &QQuickWindow::sceneGraphError, window,
                        [](QQuickWindow::SceneGraphError error, const QString &message) {
