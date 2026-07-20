@@ -33,6 +33,7 @@ struct MibTableDeleter final {
 };
 
 using RouteTable = std::unique_ptr<MIB_IPFORWARD_TABLE2, MibTableDeleter>;
+using AddressTable = std::unique_ptr<MIB_UNICASTIPADDRESS_TABLE, MibTableDeleter>;
 
 [[nodiscard]] std::optional<IN_ADDR> parseAddress(std::string_view text) {
   IN_ADDR address{};
@@ -84,7 +85,7 @@ using RouteTable = std::unique_ptr<MIB_IPFORWARD_TABLE2, MibTableDeleter>;
   char *buffer = nullptr;
   const DWORD length = FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
                                           FORMAT_MESSAGE_IGNORE_INSERTS,
-                                      nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                                      nullptr, error, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
                                       reinterpret_cast<char *>(&buffer), 0, nullptr);
   if (length == 0 || buffer == nullptr) {
     return {};
@@ -121,6 +122,10 @@ bool WindowsNetworkConfig::assignAddress(const Ipv4AddressSpec &address) {
     return fail("Invalid IPv4 interface address", ERROR_INVALID_PARAMETER);
   }
 
+  if (!clearIpv4Addresses()) {
+    return false;
+  }
+
   MIB_UNICASTIPADDRESS_ROW row{};
   InitializeUnicastIpAddressEntry(&row);
   row.InterfaceLuid = makeLuid(interface_.luid);
@@ -128,12 +133,6 @@ bool WindowsNetworkConfig::assignAddress(const Ipv4AddressSpec &address) {
   row.Address.Ipv4.sin_family = AF_INET;
   row.Address.Ipv4.sin_addr = *parsedAddress;
   row.OnLinkPrefixLength = *prefix;
-  row.DadState = IpDadStatePreferred;
-
-  const DWORD deleteResult = DeleteUnicastIpAddressEntry(&row);
-  if (deleteResult != NO_ERROR && deleteResult != ERROR_NOT_FOUND) {
-    return fail("Failed to replace existing IPv4 address", deleteResult);
-  }
 
   const DWORD createResult = CreateUnicastIpAddressEntry(&row);
   if (createResult != NO_ERROR && createResult != ERROR_OBJECT_ALREADY_EXISTS) {
@@ -143,15 +142,38 @@ bool WindowsNetworkConfig::assignAddress(const Ipv4AddressSpec &address) {
   return true;
 }
 
-bool WindowsNetworkConfig::replaceRoute(const Ipv4RouteSpec &route) {
+bool WindowsNetworkConfig::clearIpv4Addresses() {
+  MIB_UNICASTIPADDRESS_TABLE *rawTable = nullptr;
+  const DWORD tableResult = GetUnicastIpAddressTable(AF_INET, &rawTable);
+  if (tableResult == ERROR_NOT_FOUND) {
+    return true;
+  }
+  if (tableResult != NO_ERROR) {
+    return fail("Failed to enumerate existing IPv4 addresses", tableResult);
+  }
+  const AddressTable table{rawTable};
+
+  for (ULONG index = 0; index < table->NumEntries; ++index) {
+    const auto &candidate = table->Table[index];
+    if (candidate.InterfaceLuid.Value != interface_.luid) {
+      continue;
+    }
+    const DWORD deleteResult = DeleteUnicastIpAddressEntry(&candidate);
+    if (deleteResult != NO_ERROR && deleteResult != ERROR_NOT_FOUND) {
+      return fail("Failed to remove an existing IPv4 address", deleteResult);
+    }
+  }
+  return true;
+}
+
+bool WindowsNetworkConfig::ensureOnLinkRoute(const Ipv4RouteSpec &route) {
   if (!isBound()) {
     return fail("Route interface is not bound", ERROR_INVALID_PARAMETER);
   }
 
   const auto network = parseAddress(route.network);
-  const auto nextHop = parseAddress(route.nextHop);
   const auto prefix = prefixLength(route.netmask);
-  if (!network || !nextHop || !prefix) {
+  if (!network || !prefix) {
     return fail("Invalid IPv4 route", ERROR_INVALID_PARAMETER);
   }
 
@@ -163,7 +185,6 @@ bool WindowsNetworkConfig::replaceRoute(const Ipv4RouteSpec &route) {
   desired.DestinationPrefix.Prefix.Ipv4.sin_addr = networkAddress(*network, *prefix);
   desired.DestinationPrefix.PrefixLength = *prefix;
   desired.NextHop.Ipv4.sin_family = AF_INET;
-  desired.NextHop.Ipv4.sin_addr = *nextHop;
   desired.SitePrefixLength = *prefix;
   desired.Metric = 1;
   desired.Protocol = MIB_IPPROTO_NETMGMT;
@@ -177,12 +198,9 @@ bool WindowsNetworkConfig::replaceRoute(const Ipv4RouteSpec &route) {
 
   for (ULONG index = 0; index < table->NumEntries; ++index) {
     const auto &candidate = table->Table[index];
-    if (!matchesRoute(candidate, desired)) {
-      continue;
-    }
-    const DWORD deleteResult = DeleteIpForwardEntry2(&candidate);
-    if (deleteResult != NO_ERROR && deleteResult != ERROR_NOT_FOUND) {
-      return fail("Failed to replace existing IPv4 route", deleteResult);
+    if (matchesRoute(candidate, desired)) {
+      lastError_.clear();
+      return true;
     }
   }
 

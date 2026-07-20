@@ -80,7 +80,9 @@ is rendered once, and the complete bundle is re-signed before the DMG is made.
 
 ## Runtime diagnostics
 
-Windows portable builds create `logs/connecttool.log` beside the executable.
+Windows portable builds create `logs/connecttool.log` beside the executable. An
+unhandled native exception also creates `logs/connecttool-crash.dmp`, so a
+post-startup crash can be diagnosed even when Qt cannot flush another message.
 When that directory is not writable, logging falls back to Qt's per-user local
 application-data directory. Steam initialization starts only after the first Qt
 Quick frame, so Steam client or relay initialization cannot prevent the main

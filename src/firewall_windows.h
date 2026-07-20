@@ -1,9 +1,14 @@
 #pragma once
 
+#include <string_view>
+
+struct TunFirewallScope final {
+  std::string_view localAddress;
+  std::string_view subnetMask;
+};
+
 #ifdef _WIN32
-bool ensureTcpFirewallRule(const char *ruleName, int port);
-bool ensureTunFirewallRule(const char *ruleName, const char *interfaceAlias);
+bool ensureTunFirewallRule(std::string_view ruleName, const TunFirewallScope &scope);
 #else
-inline bool ensureTcpFirewallRule(const char *, int) { return true; }
-inline bool ensureTunFirewallRule(const char *, const char *) { return true; }
+inline bool ensureTunFirewallRule(std::string_view, const TunFirewallScope &) { return true; }
 #endif

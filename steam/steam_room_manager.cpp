@@ -1,6 +1,7 @@
 #include "steam_room_manager.h"
 #include "steam_networking_manager.h"
 #include "steam_vpn_networking_manager.h"
+#include <QDebug>
 #include <algorithm>
 #include <cstring>
 #include <iostream>
@@ -88,13 +89,13 @@ void SteamMatchmakingCallbacks::OnLobbyChatMsg(LobbyChatMsg_t *pCallback) {
 void SteamMatchmakingCallbacks::OnLobbyCreated(LobbyCreated_t *pCallback,
                                                bool bIOFailure) {
   if (bIOFailure) {
-    std::cerr << "Failed to create lobby - IO Failure" << std::endl;
+    qWarning() << "[Session] Steam lobby creation failed because of an I/O error.";
     return;
   }
   if (pCallback->m_eResult == k_EResultOK) {
     roomManager_->setCurrentLobby(pCallback->m_ulSteamIDLobby);
-    std::cout << "Lobby created: "
-              << roomManager_->getCurrentLobby().ConvertToUint64() << std::endl;
+    qInfo() << "[Session] Steam lobby created:"
+            << roomManager_->getCurrentLobby().ConvertToUint64();
 
     // Set Rich Presence to enable invite functionality
     SteamFriends()->SetRichPresence("steam_display", "#Status_InLobby");
@@ -102,7 +103,8 @@ void SteamMatchmakingCallbacks::OnLobbyCreated(LobbyCreated_t *pCallback,
         "connect", std::to_string(pCallback->m_ulSteamIDLobby).c_str());
     roomManager_->refreshLobbyMetadata();
   } else {
-    std::cerr << "Failed to create lobby" << std::endl;
+    qWarning() << "[Session] Steam rejected lobby creation with result"
+               << static_cast<int>(pCallback->m_eResult);
   }
 }
 
@@ -496,7 +498,9 @@ bool SteamRoomManager::joinLobby(CSteamID lobbyID) {
 }
 
 bool SteamRoomManager::startHosting() {
+  qInfo() << "[Session] Sending CreateLobby request to Steam.";
   if (!createLobby()) {
+    qWarning() << "[Session] Steam did not accept the CreateLobby request.";
     return false;
   }
 
@@ -509,10 +513,10 @@ bool SteamRoomManager::startHosting() {
 
   if (networkingManager_->getListenSock() != k_HSteamListenSocket_Invalid) {
     networkingManager_->getIsHost() = true;
-    std::cout << "Created listen socket for hosting game room" << std::endl;
+    qInfo() << "[Session] Steam P2P listen socket created.";
     return true;
   } else {
-    std::cerr << "Failed to create listen socket for hosting" << std::endl;
+    qWarning() << "[Session] Failed to create the Steam P2P listen socket.";
     leaveLobby();
     return false;
   }

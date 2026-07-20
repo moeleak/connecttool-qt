@@ -236,6 +236,8 @@ if(WIN32)
     target_sources(connecttool-qt PRIVATE
         src/windows_accessibility_guard.h
         src/windows_accessibility_guard.cpp
+        src/windows_crash_handler.h
+        src/windows_crash_handler.cpp
         src/windows_renderer_supervisor.h
         src/windows_renderer_supervisor.cpp
         tun/windows_network_config.h
@@ -304,6 +306,7 @@ if(WIN32)
         iphlpapi
         ws2_32
         dsound
+        dbghelp
         ole32
         oleaut32)
 elseif(APPLE)

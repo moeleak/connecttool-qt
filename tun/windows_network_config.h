@@ -21,7 +21,6 @@ struct Ipv4AddressSpec final {
 struct Ipv4RouteSpec final {
   std::string_view network;
   std::string_view netmask;
-  std::string_view nextHop;
 };
 
 class WindowsNetworkConfig final {
@@ -30,12 +29,13 @@ public:
   void clear() noexcept;
 
   [[nodiscard]] bool assignAddress(const Ipv4AddressSpec &address);
-  [[nodiscard]] bool replaceRoute(const Ipv4RouteSpec &route);
+  [[nodiscard]] bool ensureOnLinkRoute(const Ipv4RouteSpec &route);
   [[nodiscard]] bool setMtu(int mtu);
   [[nodiscard]] bool setEnabled(bool enabled);
   [[nodiscard]] std::string_view lastError() const noexcept { return lastError_; }
 
 private:
+  [[nodiscard]] bool clearIpv4Addresses();
   [[nodiscard]] bool fail(std::string_view operation, unsigned long error);
   [[nodiscard]] bool isBound() const noexcept;
 

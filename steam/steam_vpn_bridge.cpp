@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <exception>
 #include <iostream>
 #include <steam_api.h>
 #include <thread>
@@ -37,32 +38,45 @@ bool SteamVpnBridge::start(Configuration configuration) {
     std::cerr << "VPN bridge already running" << std::endl;
     return false;
   }
+  if (tunReadThread_.joinable() || tunDevice_) {
+    stop();
+  }
+  {
+    std::lock_guard lock(failureMutex_);
+    lastFailure_.clear();
+  }
+
+  const auto failStart = [this](std::string message) {
+    recordFailure(std::move(message));
+    if (tunDevice_) {
+      tunDevice_->close();
+      tunDevice_.reset();
+    }
+    return false;
+  };
+
   ipNegotiator_.reset();
   heartbeatManager_.reset();
   if (!steamManager_) {
-    std::cerr << "Steam manager missing, cannot start VPN bridge" << std::endl;
-    return false;
+    return failStart("Steam manager missing, cannot start VPN bridge");
   }
 
   const int mtuToUse = configuration.mtu > 0 ? configuration.mtu : kDefaultMtu;
 
   tunDevice_ = tun::create_tun();
   if (!tunDevice_) {
-    std::cerr << "Failed to create TUN device" << std::endl;
-    return false;
+    return failStart("Failed to create TUN device");
   }
   if (!tunDevice_->open(configuration.deviceName.empty() ? kDefaultTunName
                                                          : configuration.deviceName,
                         mtuToUse)) {
-    std::cerr << "Failed to open TUN device: " << tunDevice_->get_last_error() << std::endl;
-    return false;
+    return failStart("Failed to open TUN device: " + tunDevice_->get_last_error());
   }
 
   baseIP_ = stringToIp(configuration.virtualSubnet.empty() ? kDefaultSubnet
                                                            : configuration.virtualSubnet);
   if (baseIP_ == 0) {
-    std::cerr << "Invalid virtual subnet: " << configuration.virtualSubnet << std::endl;
-    return false;
+    return failStart("Invalid virtual subnet: " + configuration.virtualSubnet);
   }
   subnetMask_ =
       stringToIp(configuration.subnetMask.empty() ? kDefaultSubnetMask : configuration.subnetMask);
@@ -92,24 +106,40 @@ bool SteamVpnBridge::start(Configuration configuration) {
   tunDevice_->set_non_blocking(true);
 
   running_ = true;
-  tunReadThread_ = std::jthread([this](std::stop_token stopToken) { tunReadLoop(stopToken); });
+  tunReadThread_ = std::jthread([this](std::stop_token stopToken) {
+    try {
+      tunReadLoop(stopToken);
+    } catch (const std::exception &exception) {
+      recordFailure("TUN worker failed: " + std::string{exception.what()});
+    } catch (...) {
+      recordFailure("TUN worker failed with an unknown exception");
+    }
+  });
   std::cout << "Steam VPN bridge started successfully" << std::endl;
   return true;
 }
 
 void SteamVpnBridge::stop() {
-  if (!running_) {
+  const bool hadResources = running_.exchange(false) || tunReadThread_.joinable() || tunDevice_;
+  if (!hadResources) {
     return;
   }
-  running_ = false;
+
   heartbeatManager_.stop();
-  tunReadThread_.request_stop();
+  if (tunReadThread_.joinable()) {
+    tunReadThread_.request_stop();
+    if (tunReadThread_.get_id() == std::this_thread::get_id()) {
+      recordFailure("TUN cleanup was requested from its own worker thread");
+      return;
+    }
+  }
   if (tunDevice_) {
     tunDevice_->close(); // wake blocking reads
   }
   if (tunReadThread_.joinable()) {
     tunReadThread_.join();
   }
+  tunDevice_.reset();
   {
     std::lock_guard<std::mutex> lock(routingMutex_);
     routingTable_.clear();
@@ -138,6 +168,16 @@ std::string SteamVpnBridge::getTunDeviceName() const {
 std::map<uint32_t, RouteEntry> SteamVpnBridge::getRoutingTable() const {
   std::lock_guard<std::mutex> lock(routingMutex_);
   return routingTable_;
+}
+
+std::optional<std::string> SteamVpnBridge::takeFailure() {
+  std::lock_guard lock(failureMutex_);
+  if (lastFailure_.empty()) {
+    return std::nullopt;
+  }
+  std::string failure = std::move(lastFailure_);
+  lastFailure_.clear();
+  return failure;
 }
 
 void SteamVpnBridge::tunReadLoop(std::stop_token stopToken) {
@@ -419,30 +459,47 @@ void SteamVpnBridge::rebroadcastState() {
 }
 
 void SteamVpnBridge::onNegotiationSuccess(uint32_t ipAddress, const NodeID &nodeId) {
-  localIP_.store(ipAddress, std::memory_order_relaxed);
+  if (!tunDevice_) {
+    recordFailure("TUN device disappeared during IP negotiation");
+    return;
+  }
+
   const std::string localIPStr = ipToString(ipAddress);
   const std::string subnetMaskStr = ipToString(subnetMask_);
-  if (tunDevice_->set_ip(localIPStr, subnetMaskStr) && tunDevice_->set_up(true)) {
-    // Install a connected route for the virtual subnet so the OS sends traffic
-    // into the TUN device.
-    const uint32_t networkIp = baseIP_ & subnetMask_;
-    const std::string networkStr = ipToString(networkIp);
-    if (!tunDevice_->add_route(networkStr, subnetMaskStr)) {
-      std::cerr << "Failed to add route to subnet " << networkStr << "/" << subnetMaskStr << " via "
-                << tunDevice_->get_device_name() << std::endl;
-    }
+  if (!tunDevice_->set_ip(localIPStr, subnetMaskStr)) {
+    recordFailure("Failed to configure the TUN address: " + tunDevice_->get_last_error());
+    return;
+  }
+  if (!tunDevice_->set_up(true)) {
+    recordFailure("Failed to enable the TUN interface: " + tunDevice_->get_last_error());
+    return;
+  }
 
-    const CSteamID mySteamID = SteamUser()->GetSteamID();
-    updateRoute(
-        {nodeId, mySteamID, ipAddress, SteamFriends() ? SteamFriends()->GetPersonaName() : ""});
-    heartbeatManager_.initialize(nodeId, ipAddress);
-    heartbeatManager_.registerNode(nodeId, mySteamID, ipAddress,
-                                   SteamFriends() ? SteamFriends()->GetPersonaName() : "");
-    heartbeatManager_.start();
-    broadcastRouteUpdate();
-  } else {
-    std::cerr << "Failed to configure TUN device IP." << std::endl;
-    stop();
+  // Install a connected route for the virtual subnet so the OS sends traffic
+  // into the TUN device.
+  const uint32_t networkIp = baseIP_ & subnetMask_;
+  const std::string networkStr = ipToString(networkIp);
+  if (!tunDevice_->add_route(networkStr, subnetMaskStr)) {
+    recordFailure("Failed to add the TUN route: " + tunDevice_->get_last_error());
+    return;
+  }
+
+  localIP_.store(ipAddress, std::memory_order_relaxed);
+  const CSteamID mySteamID = SteamUser()->GetSteamID();
+  updateRoute(
+      {nodeId, mySteamID, ipAddress, SteamFriends() ? SteamFriends()->GetPersonaName() : ""});
+  heartbeatManager_.initialize(nodeId, ipAddress);
+  heartbeatManager_.registerNode(nodeId, mySteamID, ipAddress,
+                                 SteamFriends() ? SteamFriends()->GetPersonaName() : "");
+  heartbeatManager_.start();
+  broadcastRouteUpdate();
+}
+
+void SteamVpnBridge::recordFailure(std::string message) {
+  running_ = false;
+  std::lock_guard lock(failureMutex_);
+  if (lastFailure_.empty()) {
+    lastFailure_ = std::move(message);
   }
 }
 

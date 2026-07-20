@@ -3,6 +3,7 @@
 #include "backend.h"
 #if defined(Q_OS_WIN)
 #include "windows_accessibility_guard.h"
+#include "windows_crash_handler.h"
 #include "windows_renderer_supervisor.h"
 #endif
 
@@ -109,8 +110,14 @@ int main(int argc, char *argv[]) {
   QGuiApplication app(argc, argv);
   const QStringList arguments = QCoreApplication::arguments();
   ApplicationDiagnostics diagnostics(optionValue(arguments, QStringLiteral("--log-file=")));
+#if defined(Q_OS_WIN)
+  connecttool::windows::CrashHandler crashHandler(diagnostics.logPath());
+#endif
   qInfo().noquote() << "ConnectTool" << CONNECTTOOL_VERSION << "starting with Qt" << QT_VERSION_STR
                     << "log:" << diagnostics.logPath();
+#if defined(Q_OS_WIN)
+  qInfo().noquote() << "[Startup] Native crash dump:" << crashHandler.dumpPath();
+#endif
   qInfo().noquote()
       << "[Startup] Renderer preference:"
       << (softwareRenderer ? QStringLiteral("software")

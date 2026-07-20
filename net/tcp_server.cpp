@@ -1,6 +1,5 @@
 #include "tcp_server.h"
 #include "../steam/steam_networking_manager.h"
-#include "firewall_windows.h"
 #include <algorithm>
 #include <iostream>
 #include <mutex>
@@ -77,19 +76,13 @@ TCPServer::~TCPServer() { stop(); }
 
 bool TCPServer::start() {
   try {
-    tcp::endpoint endpoint(tcp::v4(), port_);
+    // This endpoint is consumed by software on the same machine. Keeping it on
+    // loopback avoids exposing the tunnel to the LAN and needs no firewall rule.
+    const tcp::endpoint endpoint(boost::asio::ip::address_v4::loopback(), port_);
     acceptor_.open(endpoint.protocol());
     acceptor_.set_option(tcp::acceptor::reuse_address(true));
     acceptor_.bind(endpoint);
     acceptor_.listen();
-
-#if defined(_WIN32)
-    if (!ensureTcpFirewallRule("ConnectTool TCP inbound", port_)) {
-      std::cerr << "Failed to add firewall rule for TCP port " << port_ << std::endl;
-    } else {
-      std::cout << "Added firewall rule for TCP port " << port_ << std::endl;
-    }
-#endif
 
     running_ = true;
     serverThread_ = std::jthread([this](std::stop_token) {

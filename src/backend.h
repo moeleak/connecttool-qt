@@ -209,6 +209,8 @@ private:
   bool applyLobbyModePreference(const CSteamID &lobby);
   bool inTunMode() const { return connectionMode_ == ConnectionMode::Tun; }
   bool inTcpMode() const { return connectionMode_ == ConnectionMode::Tcp; }
+  bool startVpnBridge();
+  bool handleVpnFailure();
   void ensureVpnRunning();
   bool hasAdminPrivileges() const;
   bool ensureTunPrivileges();

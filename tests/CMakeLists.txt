@@ -14,3 +14,19 @@ target_link_libraries(connecttool_protocol_tests PRIVATE
 target_compile_features(connecttool_protocol_tests PRIVATE cxx_std_23)
 
 add_test(NAME protocol COMMAND connecttool_protocol_tests)
+
+if(WIN32)
+    add_executable(connecttool_windows_firewall_tests
+        windows_firewall_test.cpp
+        ../src/firewall_windows.cpp)
+    target_include_directories(connecttool_windows_firewall_tests PRIVATE
+        ${PROJECT_SOURCE_DIR}/src)
+    target_compile_definitions(connecttool_windows_firewall_tests PRIVATE
+        _WIN32_WINNT=0x0A00
+        WINVER=0x0A00)
+    target_compile_features(connecttool_windows_firewall_tests PRIVATE cxx_std_23)
+    target_link_libraries(connecttool_windows_firewall_tests PRIVATE
+        ole32
+        oleaut32)
+    add_test(NAME windows-firewall-native COMMAND connecttool_windows_firewall_tests)
+endif()

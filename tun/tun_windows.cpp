@@ -211,7 +211,6 @@ public:
     }
     networkConfig_.clear();
     deviceName_.clear();
-    lastConfiguredIp_.clear();
   }
 
   bool is_open() const override { return adapter_ && session_; }
@@ -278,18 +277,12 @@ public:
       return false;
     }
     std::cout << "Set IP address: " << ip << std::endl;
-    lastConfiguredIp_ = ip;
-    ensureFirewallRule();
+    ensureFirewallRule(ip, netmask);
     return true;
   }
 
   bool add_route(const std::string &network, const std::string &netmask) override {
-    if (lastConfiguredIp_.empty()) {
-      setError("Adapter IP/index not set for routing");
-      return false;
-    }
-    if (!networkConfig_.replaceRoute(
-            {.network = network, .netmask = netmask, .nextHop = lastConfiguredIp_})) {
+    if (!networkConfig_.ensureOnLinkRoute({.network = network, .netmask = netmask})) {
       setError(std::string{networkConfig_.lastError()});
       return false;
     }
@@ -335,16 +328,13 @@ public:
   }
 
 private:
-  void ensureFirewallRule() const {
-    if (deviceName_.empty()) {
+  void ensureFirewallRule(const std::string &ip, const std::string &netmask) const {
+    const char *ruleName = "ConnectTool TUN inbound";
+    if (!ensureTunFirewallRule(ruleName, {.localAddress = ip, .subnetMask = netmask})) {
+      std::cerr << "Failed to add firewall rule for " << deviceName_ << std::endl;
       return;
     }
-    const char *ruleName = "ConnectTool TUN inbound";
-    if (!ensureTunFirewallRule(ruleName, deviceName_.c_str())) {
-      std::cerr << "Failed to add firewall rule for " << deviceName_ << std::endl;
-    } else {
-      std::cout << "Added firewall rule for interface " << deviceName_ << std::endl;
-    }
+    std::cout << "Added firewall rule for virtual address " << ip << std::endl;
   }
 
   void setError(const std::string &error) {
@@ -356,7 +346,7 @@ private:
     char *msgBuf = nullptr;
     FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
                        FORMAT_MESSAGE_IGNORE_INSERTS,
-                   nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                   nullptr, error, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
                    reinterpret_cast<LPSTR>(&msgBuf), 0, nullptr);
     std::ostringstream oss;
     oss << prefix << " (Error " << error << ")";
@@ -371,7 +361,6 @@ private:
   WINTUN_SESSION_HANDLE session_ = nullptr;
   std::string deviceName_;
   std::string lastError_;
-  std::string lastConfiguredIp_;
   bool nonBlocking_ = false;
   WindowsNetworkConfig networkConfig_;
 };

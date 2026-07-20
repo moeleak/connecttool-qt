@@ -8,6 +8,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
@@ -36,6 +37,7 @@ public:
   std::string getLocalIP() const;
   std::string getTunDeviceName() const;
   std::map<uint32_t, RouteEntry> getRoutingTable() const;
+  [[nodiscard]] std::optional<std::string> takeFailure();
 
   void handleVpnMessage(const uint8_t *data, size_t length, CSteamID senderSteamID);
   void onUserJoined(CSteamID steamID);
@@ -83,6 +85,7 @@ private:
   void removeRoute(uint32_t ipAddress);
   void broadcastRouteUpdate();
   void sendRouteUpdateTo(CSteamID targetSteamID);
+  void recordFailure(std::string message);
 
   SteamVpnNetworkingManager *steamManager_;
   std::unique_ptr<tun::TunInterface> tunDevice_;
@@ -98,6 +101,9 @@ private:
 
   Statistics stats_;
   mutable std::mutex statsMutex_;
+
+  std::string lastFailure_;
+  std::mutex failureMutex_;
 
   IpNegotiator ipNegotiator_;
   HeartbeatManager heartbeatManager_;

@@ -12,6 +12,10 @@
 #include <netfw.h>
 #include <oleauto.h>
 
+#include <array>
+#include <bit>
+#include <charconv>
+#include <cstdint>
 #include <functional>
 #include <iomanip>
 #include <iostream>
@@ -51,7 +55,7 @@ private:
 
 class ComApartment final {
 public:
-  ComApartment() : result_(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)) {}
+  ComApartment() : result_(CoInitializeEx(nullptr, COINIT_MULTITHREADED)) {}
   ComApartment(const ComApartment &) = delete;
   ComApartment &operator=(const ComApartment &) = delete;
 
@@ -89,56 +93,66 @@ private:
   BSTR value_ = nullptr;
 };
 
-class InterfaceNames final {
-public:
-  explicit InterfaceNames(std::wstring_view interfaceName) {
-    VariantInit(&value_);
-    SAFEARRAY *array = SafeArrayCreateVector(VT_VARIANT, 0, 1);
-    if (array == nullptr) {
-      result_ = E_OUTOFMEMORY;
-      return;
-    }
-
-    VARIANT item;
-    VariantInit(&item);
-    item.vt = VT_BSTR;
-    item.bstrVal = SysAllocStringLen(interfaceName.data(), static_cast<UINT>(interfaceName.size()));
-    if (item.bstrVal == nullptr) {
-      SafeArrayDestroy(array);
-      result_ = E_OUTOFMEMORY;
-      return;
-    }
-
-    LONG index = 0;
-    result_ = SafeArrayPutElement(array, &index, &item);
-    VariantClear(&item);
-    if (FAILED(result_)) {
-      SafeArrayDestroy(array);
-      return;
-    }
-
-    value_.vt = VT_ARRAY | VT_VARIANT;
-    value_.parray = array;
-  }
-  InterfaceNames(const InterfaceNames &) = delete;
-  InterfaceNames &operator=(const InterfaceNames &) = delete;
-
-  ~InterfaceNames() { VariantClear(&value_); }
-
-  [[nodiscard]] HRESULT result() const noexcept { return result_; }
-  [[nodiscard]] VARIANT get() const noexcept { return value_; }
-
-private:
-  VARIANT value_{};
-  HRESULT result_ = S_OK;
-};
-
 struct FirewallRuleSpec final {
   std::wstring name;
   long protocol = NET_FW_IP_PROTOCOL_ANY;
-  std::optional<std::wstring> localPorts;
-  std::optional<std::wstring> interfaceName;
+  std::optional<std::wstring> localAddresses;
+  std::optional<std::wstring> remoteAddresses;
 };
+
+[[nodiscard]] std::optional<std::uint32_t> parseIpv4(std::string_view input) {
+  std::uint32_t address = 0;
+  std::size_t offset = 0;
+
+  for (std::size_t index = 0; index < 4; ++index) {
+    const std::size_t separator = input.find('.', offset);
+    const bool isLastOctet = index == 3;
+    if ((isLastOctet && separator != std::string_view::npos) ||
+        (!isLastOctet && separator == std::string_view::npos)) {
+      return std::nullopt;
+    }
+
+    const std::size_t end = isLastOctet ? input.size() : separator;
+    const std::string_view octetText = input.substr(offset, end - offset);
+    unsigned int octet = 0;
+    const auto [parseEnd, error] =
+        std::from_chars(octetText.data(), octetText.data() + octetText.size(), octet);
+    if (octetText.empty() || error != std::errc{} ||
+        parseEnd != octetText.data() + octetText.size() || octet > 255) {
+      return std::nullopt;
+    }
+
+    address = (address << 8U) | octet;
+    offset = end + 1;
+  }
+  return address;
+}
+
+[[nodiscard]] std::optional<std::string> subnetToken(const TunFirewallScope &scope) {
+  const auto address = parseIpv4(scope.localAddress);
+  const auto mask = parseIpv4(scope.subnetMask);
+  if (!address || !mask) {
+    return std::nullopt;
+  }
+
+  const unsigned int prefix = std::countl_one(*mask);
+  if (prefix != 32 && (*mask << prefix) != 0) {
+    return std::nullopt;
+  }
+
+  const std::uint32_t network = *address & *mask;
+  std::string result;
+  result.reserve(18);
+  for (unsigned int shift : std::array{24U, 16U, 8U, 0U}) {
+    if (!result.empty()) {
+      result.push_back('.');
+    }
+    result += std::to_string((network >> shift) & 0xffU);
+  }
+  result.push_back('/');
+  result += std::to_string(prefix);
+  return result;
+}
 
 template <typename... Operations> [[nodiscard]] HRESULT firstFailure(Operations &&...operations) {
   HRESULT result = S_OK;
@@ -151,12 +165,11 @@ template <typename... Operations> [[nodiscard]] HRESULT firstFailure(Operations 
   return result;
 }
 
-[[nodiscard]] std::optional<std::wstring> toWide(const char *value) {
-  if (value == nullptr || value[0] == '\0') {
+[[nodiscard]] std::optional<std::wstring> toWide(std::string_view input) {
+  if (input.empty()) {
     return std::nullopt;
   }
 
-  const std::string_view input{value};
   if (input.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
     return std::nullopt;
   }
@@ -196,20 +209,20 @@ template <typename... Operations> [[nodiscard]] HRESULT firstFailure(Operations 
                                 [&] { return rule.put_Protocol(spec.protocol); },
                                 [&] { return rule.put_Direction(NET_FW_RULE_DIR_IN); },
                                 [&] { return rule.put_Action(NET_FW_ACTION_ALLOW); },
-                                [&] { return rule.put_Profiles(NET_FW_PROFILE2_ALL); },
-                                [&] { return rule.put_Enabled(VARIANT_TRUE); });
+                                [&] { return rule.put_Profiles(NET_FW_PROFILE2_ALL); });
 
-  if (SUCCEEDED(result) && spec.localPorts) {
-    const BString ports{*spec.localPorts};
-    result = ports ? rule.put_LocalPorts(ports.get()) : E_OUTOFMEMORY;
+  if (SUCCEEDED(result) && spec.localAddresses) {
+    const BString addresses{*spec.localAddresses};
+    result = addresses ? rule.put_LocalAddresses(addresses.get()) : E_OUTOFMEMORY;
   }
 
-  if (SUCCEEDED(result) && spec.interfaceName) {
-    const InterfaceNames interfaces{*spec.interfaceName};
-    result = interfaces.result();
-    if (SUCCEEDED(result)) {
-      result = rule.put_Interfaces(interfaces.get());
-    }
+  if (SUCCEEDED(result) && spec.remoteAddresses) {
+    const BString addresses{*spec.remoteAddresses};
+    result = addresses ? rule.put_RemoteAddresses(addresses.get()) : E_OUTOFMEMORY;
+  }
+
+  if (SUCCEEDED(result)) {
+    result = rule.put_Enabled(VARIANT_TRUE);
   }
   return result;
 }
@@ -261,30 +274,20 @@ template <typename... Operations> [[nodiscard]] HRESULT firstFailure(Operations 
 
 } // namespace
 
-bool ensureTcpFirewallRule(const char *ruleName, int port) {
+bool ensureTunFirewallRule(std::string_view ruleName, const TunFirewallScope &scope) {
   const auto name = toWide(ruleName);
-  if (!name || port <= 0 || port > 65'535) {
-    return false;
-  }
-
-  return installRule(FirewallRuleSpec{
-      .name = *name,
-      .protocol = NET_FW_IP_PROTOCOL_TCP,
-      .localPorts = std::to_wstring(port),
-  });
-}
-
-bool ensureTunFirewallRule(const char *ruleName, const char *interfaceAlias) {
-  const auto name = toWide(ruleName);
-  const auto interfaceName = toWide(interfaceAlias);
-  if (!name || !interfaceName) {
+  const auto localAddress = toWide(scope.localAddress);
+  const auto subnet = subnetToken(scope);
+  const auto remoteAddresses = subnet ? toWide(*subnet) : std::nullopt;
+  if (!name || !localAddress || !remoteAddresses) {
     return false;
   }
 
   return installRule(FirewallRuleSpec{
       .name = *name,
       .protocol = NET_FW_IP_PROTOCOL_ANY,
-      .interfaceName = *interfaceName,
+      .localAddresses = *localAddress,
+      .remoteAddresses = *remoteAddresses,
   });
 }
 
