@@ -297,15 +297,6 @@ Item {
                 }
             }
 
-            MD.Label {
-                Layout.fillWidth: true
-                text: App.session.status
-                color: Theme.foregroundMuted
-                typescale: MD.Token.typescale.body_small
-                wrapMode: Text.WordWrap
-                elide: Text.ElideNone
-            }
-
             Item { Layout.fillHeight: true }
 
             RowLayout {

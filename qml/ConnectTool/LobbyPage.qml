@@ -45,6 +45,14 @@ Item {
                 accent: Theme.secondary
             }
 
+            MD.Button {
+                text: App.lobbies.refreshing ? qsTr("刷新中") : qsTr("刷新")
+                icon.name: MD.Token.icon.refresh
+                mdState.type: MD.Enum.BtFilledTonal
+                enabled: !App.lobbies.refreshing && App.session.steamReady
+                onClicked: App.lobbies.refresh()
+            }
+
             MD.BusyIndicator {
                 Layout.preferredWidth: 32
                 Layout.preferredHeight: 32
@@ -52,14 +60,6 @@ Item {
                 showDelay: 120
                 minHideDelay: 240
                 running: App.lobbies.refreshing
-            }
-
-            MD.Button {
-                text: App.lobbies.refreshing ? qsTr("刷新中") : qsTr("刷新")
-                icon.name: MD.Token.icon.refresh
-                mdState.type: MD.Enum.BtFilledTonal
-                enabled: !App.lobbies.refreshing && App.session.steamReady
-                onClicked: App.lobbies.refresh()
             }
         }
 
