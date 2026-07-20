@@ -142,7 +142,7 @@ jobs:
             build/qml_modules/Qcm/Material
             build/.ninja_deps
             build/.ninja_log
-          key: qml-material-${{ env.CMAKE_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-ninja-${{ steps.runner-image.outputs.version }}-qt${{ env.QT_VERSION }}-${{ env.BUILD_TYPE }}-${{ hashFiles('CMakeLists.txt', 'flake.lock') }}
+          key: qml-material-${{ env.CMAKE_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-ninja-${{ steps.runner-image.outputs.version }}-qt${{ env.QT_VERSION }}-${{ env.BUILD_TYPE }}-${{ hashFiles('CMakeLists.txt', 'deps/cmake/*.cmake', 'modules/ConnectTool/CMakeLists.txt', 'flake.lock') }}
           restore-keys: |
             qml-material-${{ env.CMAKE_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-ninja-${{ steps.runner-image.outputs.version }}-qt${{ env.QT_VERSION }}-${{ env.BUILD_TYPE }}-
       - name: Build
@@ -160,7 +160,7 @@ jobs:
             build/.ninja_log
           key: ${{ steps.qml-material-cache-restore.outputs.cache-primary-key }}
       - name: Validate QML
-        run: cmake --build build --config ${{ env.BUILD_TYPE }} --target connecttool-qt_qmllint
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --target connecttool_ui_qmllint
       - name: Test
         run: ctest --test-dir build --build-config ${{ env.BUILD_TYPE }} --output-on-failure
       - name: Install
@@ -208,7 +208,7 @@ jobs:
           $qmlScanDir = Join-Path $env:RUNNER_TEMP 'connecttool-qml-scan'
           Remove-Item $qmlScanDir -Recurse -Force -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Path $qmlScanDir -Force | Out-Null
-          Copy-Item (Join-Path $projectDir 'qml\*') -Destination $qmlScanDir -Recurse -Force
+          Copy-Item (Join-Path $projectDir 'modules\ConnectTool') -Destination $qmlScanDir -Recurse -Force
           $qmlMaterialSource = Join-Path $projectDir 'build\_deps\qml_material-src\qml'
           if (-not (Test-Path $qmlMaterialSource -PathType Container)) {
             throw "QmlMaterial QML sources not found at $qmlMaterialSource"
@@ -552,7 +552,7 @@ jobs:
             build/qml_modules/Qcm/Material
             build/.ninja_deps
             build/.ninja_log
-          key: qml-material-${{ env.CMAKE_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runner-image.outputs.version }}-qt${{ env.QT_VERSION }}-${{ env.BUILD_TYPE }}-${{ hashFiles('CMakeLists.txt', 'flake.lock') }}
+          key: qml-material-${{ env.CMAKE_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runner-image.outputs.version }}-qt${{ env.QT_VERSION }}-${{ env.BUILD_TYPE }}-${{ hashFiles('CMakeLists.txt', 'deps/cmake/*.cmake', 'modules/ConnectTool/CMakeLists.txt', 'flake.lock') }}
           restore-keys: |
             qml-material-${{ env.CMAKE_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runner-image.outputs.version }}-qt${{ env.QT_VERSION }}-${{ env.BUILD_TYPE }}-
       - name: Build
@@ -570,7 +570,7 @@ jobs:
             build/.ninja_log
           key: ${{ steps.qml-material-cache-restore.outputs.cache-primary-key }}
       - name: Validate QML
-        run: cmake --build build --config ${{ env.BUILD_TYPE }} --target connecttool-qt_qmllint
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --target connecttool_ui_qmllint
       - name: Test
         run: ctest --test-dir build --build-config ${{ env.BUILD_TYPE }} --output-on-failure
       - name: Deploy Qt runtime (macOS)
@@ -578,7 +578,7 @@ jobs:
         run: |
           set -euo pipefail
           macdeployqt "build/connecttool-qt.app" \
-            -qmldir="${{ github.workspace }}/qml" \
+            -qmldir="${{ github.workspace }}/modules" \
             -verbose=2
       - name: Prune unused Qt runtime (macOS)
         shell: bash
@@ -772,7 +772,7 @@ jobs:
             build/qml_modules/Qcm/Material
             build/.ninja_deps
             build/.ninja_log
-          key: qml-material-${{ env.CMAKE_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runner-image.outputs.version }}-qt${{ env.QT_VERSION }}-${{ env.BUILD_TYPE }}-${{ hashFiles('CMakeLists.txt', 'flake.lock') }}
+          key: qml-material-${{ env.CMAKE_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runner-image.outputs.version }}-qt${{ env.QT_VERSION }}-${{ env.BUILD_TYPE }}-${{ hashFiles('CMakeLists.txt', 'deps/cmake/*.cmake', 'modules/ConnectTool/CMakeLists.txt', 'flake.lock') }}
           restore-keys: |
             qml-material-${{ env.CMAKE_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runner-image.outputs.version }}-qt${{ env.QT_VERSION }}-${{ env.BUILD_TYPE }}-
       - name: Build (Linux)
@@ -790,7 +790,7 @@ jobs:
             build/.ninja_log
           key: ${{ steps.qml-material-cache-restore.outputs.cache-primary-key }}
       - name: Validate QML
-        run: cmake --build build --config ${{ env.BUILD_TYPE }} --target connecttool-qt_qmllint
+        run: cmake --build build --config ${{ env.BUILD_TYPE }} --target connecttool_ui_qmllint
       - name: Test
         run: ctest --test-dir build --build-config ${{ env.BUILD_TYPE }} --output-on-failure
       - name: Install (Linux)
@@ -806,7 +806,7 @@ jobs:
       - name: Build AppImage
         shell: bash
         env:
-          QML_SOURCES_PATHS: ${{ github.workspace }}/qml
+          QML_SOURCES_PATHS: ${{ github.workspace }}/modules
           EXTRA_QT_MODULES: waylandcompositor
           EXTRA_PLATFORM_PLUGINS: libqwayland.so
         run: |

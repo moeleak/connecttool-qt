@@ -43,7 +43,7 @@ relayed, the selected POP, and run at least three 30-second samples in each
 direction. The current implementation also removes two avoidable costs that the
 old measurement included:
 
-- a local TCP socket is read only by `MultiplexManager`, eliminating duplicate
+- a local TCP socket is read only by `MultiplexSession`, eliminating duplicate
   asynchronous reads and duplicate forwarding;
 - per-client read buffers are 64 KiB instead of 1 MiB, reducing retained memory
   and cache pressure while preserving stream throughput.

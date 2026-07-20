@@ -2,10 +2,12 @@ find_package(Qt6 6.11.1 REQUIRED COMPONENTS Qml Test)
 
 qt_add_executable(connecttool_protocol_tests
     protocol_tests.cpp
-    ../src/lobbies_model.cpp)
+    ../modules/ConnectTool/models/lobbies_model.cpp)
 target_include_directories(connecttool_protocol_tests PRIVATE
-    ${PROJECT_SOURCE_DIR}/src)
+    ${PROJECT_SOURCE_DIR}/src
+    ${PROJECT_SOURCE_DIR}/modules)
 target_link_libraries(connecttool_protocol_tests PRIVATE
+    connecttool_network
     connecttool_protocol
     connecttool_update
     Qt6::Core
@@ -15,10 +17,15 @@ target_compile_features(connecttool_protocol_tests PRIVATE cxx_std_23)
 
 add_test(NAME protocol COMMAND connecttool_protocol_tests)
 
+add_test(NAME architecture-boundaries
+    COMMAND ${CMAKE_COMMAND}
+        -DPROJECT_ROOT=${PROJECT_SOURCE_DIR}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/verify_architecture.cmake)
+
 if(WIN32)
     add_executable(connecttool_windows_firewall_tests
         windows_firewall_test.cpp
-        ../src/firewall_windows.cpp)
+        ../src/platform/windows/firewall_windows.cpp)
     target_include_directories(connecttool_windows_firewall_tests PRIVATE
         ${PROJECT_SOURCE_DIR}/src)
     target_compile_definitions(connecttool_windows_firewall_tests PRIVATE

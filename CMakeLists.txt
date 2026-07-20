@@ -26,68 +26,24 @@ option(CONNECTTOOL_ADHOC_SIGN_MACOS
 
 include(CTest)
 
+function(connecttool_enable_strict_warnings target)
+    if(NOT CONNECTTOOL_ENABLE_STRICT_WARNINGS)
+        return()
+    endif()
+    if(MSVC)
+        target_compile_options(${target} PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+endfunction()
+
 find_package(Qt6 6.11.1 REQUIRED COMPONENTS Core Network)
 qt_standard_project_setup()
 
-add_library(connecttool_protocol STATIC
-    net/multiplex_protocol.cpp)
-target_include_directories(connecttool_protocol PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_features(connecttool_protocol PUBLIC cxx_std_23)
+add_subdirectory(deps)
+add_subdirectory(src/domain)
+add_subdirectory(src/network/protocol)
 
-if(CONNECTTOOL_BUILD_BENCHMARKS)
-    add_executable(connecttool_protocol_benchmark
-        benchmarks/protocol_benchmark.cpp)
-    target_link_libraries(connecttool_protocol_benchmark PRIVATE
-        connecttool_protocol)
-    target_compile_features(connecttool_protocol_benchmark PRIVATE cxx_std_23)
-endif()
-
-if(CONNECTTOOL_ENABLE_STRICT_WARNINGS)
-    if(MSVC)
-        target_compile_options(connecttool_protocol PRIVATE /W4 /permissive-)
-    else()
-        target_compile_options(connecttool_protocol PRIVATE
-            -Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion)
-    endif()
-endif()
-
-add_library(connecttool_update STATIC
-    src/update_controller.cpp)
-target_include_directories(connecttool_update PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_compile_features(connecttool_update PUBLIC cxx_std_23)
-target_link_libraries(connecttool_update PUBLIC Qt6::Core Qt6::Network)
-
-if(BUILD_TESTING)
-    add_subdirectory(tests)
-endif()
-
-if(NOT CONNECTTOOL_BUILD_APPLICATION)
-    return()
-endif()
-
-find_package(Qt6 6.11.1 REQUIRED COMPONENTS Gui Qml Quick QuickControls2 Network)
-
-# QmlMaterial supplies the Material Design 3 controls used by the desktop UI.
-# Keep it static so the QML plugin and its assets travel with the application
-# on every platform. Nix injects a pre-fetched source directory; regular CMake
-# builds fetch the same pinned revision on first configure.
-include(FetchContent)
-set(QM_BUILD_EXAMPLE OFF CACHE BOOL "Build QmlMaterial example" FORCE)
-set(QM_BUILD_TESTS OFF CACHE BOOL "Build QmlMaterial tests" FORCE)
-set(QML_MATERIAL_BUILD_TYPE STATIC CACHE STRING "QmlMaterial library type" FORCE)
-FetchContent_Declare(
-    qml_material
-    GIT_REPOSITORY https://github.com/moeleak/QmlMaterial.git
-    GIT_TAG 4ab7fd009071755b607d5393dd1af07b52c80b5c
-    EXCLUDE_FROM_ALL)
-FetchContent_MakeAvailable(qml_material)
-
-# Read version from git tag if available
-set(CONNECTTOOL_VERSION "1.6.0-alpha.1")
-if(DEFINED ENV{CONNECTTOOL_VERSION})
-    set(CONNECTTOOL_VERSION "$ENV{CONNECTTOOL_VERSION}")
-endif()
-message(STATUS "ConnectTool version: ${CONNECTTOOL_VERSION}")
 set(BOOST_MIN_VERSION 1.70)
 if(POLICY CMP0167)
     # Prefer FindBoost when config packages are unavailable (older toolchains)
@@ -100,177 +56,8 @@ if(NOT Boost_FOUND)
 endif()
 find_package(Threads REQUIRED)
 
-qt_policy(SET QTP0004 NEW)
-qt_policy(SET QTP0001 NEW)
-if(QT_KNOWN_POLICY_QTP0005)
-    qt_policy(SET QTP0005 NEW)
-endif()
-
-set(STEAMWORKS_PATH_HINT "${CMAKE_SOURCE_DIR}/steamworks" CACHE PATH "Path to the Steamworks SDK (contains public/ and redistributable_bin)")
-set(STEAMWORKS_SDK_DIR "${CMAKE_SOURCE_DIR}/sdk" CACHE PATH "Optional fallback Steamworks SDK path")
-
-set(_steam_include_hints
-    ${STEAMWORKS_PATH_HINT}/public
-    ${STEAMWORKS_PATH_HINT}/public/steam
-    ${STEAMWORKS_SDK_DIR}/public
-    ${STEAMWORKS_SDK_DIR}/public/steam)
-
-set(_steam_lib_hints)
-
-if(WIN32)
-    list(APPEND _steam_lib_hints
-        ${STEAMWORKS_PATH_HINT}/redistributable_bin/win64
-        ${STEAMWORKS_SDK_DIR}/redistributable_bin/win64)
-elseif(APPLE)
-    list(APPEND _steam_lib_hints
-        ${STEAMWORKS_PATH_HINT}/redistributable_bin/osx
-        ${STEAMWORKS_SDK_DIR}/redistributable_bin/osx)
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-    list(APPEND _steam_lib_hints
-        ${STEAMWORKS_PATH_HINT}/redistributable_bin/linuxarm64
-        ${STEAMWORKS_SDK_DIR}/redistributable_bin/linuxarm64)
-else()
-    list(APPEND _steam_lib_hints
-        ${STEAMWORKS_PATH_HINT}/redistributable_bin/linux64
-        ${STEAMWORKS_SDK_DIR}/redistributable_bin/linux64)
-endif()
-
-find_path(STEAMWORKS_INCLUDE_DIR steam_api.h PATHS ${_steam_include_hints})
-find_library(STEAMWORKS_LIBRARY NAMES steam_api steam_api64 PATHS ${_steam_lib_hints})
-
-if(NOT STEAMWORKS_INCLUDE_DIR OR NOT STEAMWORKS_LIBRARY)
-    message(FATAL_ERROR "Steamworks SDK not found. Set STEAMWORKS_PATH_HINT or place the SDK in ./steamworks or ./sdk.")
-endif()
-
-if(WIN32)
-    set(_steam_runtime_names steam_api64.dll steam_api.dll)
-elseif(APPLE)
-    set(_steam_runtime_names libsteam_api.dylib)
-else()
-    set(_steam_runtime_names libsteam_api.so)
-endif()
-
-find_file(STEAMWORKS_RUNTIME_LIBRARY
-    NAMES ${_steam_runtime_names}
-    PATHS ${_steam_lib_hints})
-
-if(WIN32 AND NOT STEAMWORKS_RUNTIME_LIBRARY)
-    message(FATAL_ERROR "Steamworks redistributable DLL not found. Ensure steam_api64.dll is available in the redistributable_bin directory.")
-endif()
-
-find_file(STEAMWORKS_WEBRTC_LIBRARY
-    NAMES
-        libsteamwebrtc.dylib
-        libsteamwebrtc.so
-        steamwebrtc64.dll
-    PATHS ${_steam_lib_hints})
-
-if(NOT STEAMWORKS_RUNTIME_LIBRARY)
-    set(STEAMWORKS_RUNTIME_LIBRARY ${STEAMWORKS_LIBRARY})
-endif()
-
-set(STEAMWORKS_RUNTIME_LIBRARIES ${STEAMWORKS_RUNTIME_LIBRARY})
-if(STEAMWORKS_WEBRTC_LIBRARY)
-    list(APPEND STEAMWORKS_RUNTIME_LIBRARIES ${STEAMWORKS_WEBRTC_LIBRARY})
-endif()
-
-qt_add_executable(connecttool-qt
-    src/main.cpp
-    src/application_diagnostics.h
-    src/application_diagnostics.cpp
-    src/application_controller.h
-    src/application_controller.cpp
-    src/platform_environment.cpp
-    src/backend.cpp
-    src/lobbies_model.h
-    src/lobbies_model.cpp
-    src/friends_model.h
-    src/friends_model.cpp
-    src/chat_model.h
-    src/chat_model.cpp
-    src/members_model.h
-    src/members_model.cpp
-    src/sound_notifier.cpp
-    net/multiplex_manager.cpp
-    net/tcp_server.cpp
-    net/ip_negotiator.cpp
-    net/heartbeat_manager.cpp
-    net/node_identity.cpp
-    steam/steam_message_handler.cpp
-    steam/steam_networking_manager.cpp
-    steam/steam_room_manager.cpp
-    steam/steam_utils.cpp
-    steam/vpn_message_handler.cpp
-    steam/steam_vpn_networking_manager.cpp
-    steam/steam_vpn_bridge.cpp)
-
-qt_add_resources(connecttool-qt bundled_fonts
-    PREFIX "/fonts"
-    BASE "resources/fonts"
-    FILES
-        resources/fonts/NotoSansCJKsc-Regular.otf)
-
-qt_add_resources(connecttool-qt third_party_notices
-    PREFIX "/licenses"
-    BASE "${CMAKE_SOURCE_DIR}"
-    FILES
-        THIRD_PARTY_NOTICES.md
-        licenses/QmlMaterial-MIT.txt
-        licenses/Apache-2.0.txt)
-
-if(APPLE)
-    set_target_properties(connecttool-qt PROPERTIES MACOSX_BUNDLE TRUE)
-    set(APP_ICON_MACOS "${CMAKE_SOURCE_DIR}/resources/ConnectTool.icns")
-    set_source_files_properties(${APP_ICON_MACOS}
-        PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
-    target_sources(connecttool-qt PRIVATE ${APP_ICON_MACOS})
-    set_target_properties(connecttool-qt PROPERTIES
-        MACOSX_BUNDLE_ICON_FILE "ConnectTool.icns")
-endif()
-
-if(WIN32)
-    set_target_properties(connecttool-qt PROPERTIES WIN32_EXECUTABLE TRUE)
-    target_compile_definitions(connecttool-qt PRIVATE
-        _WIN32_WINNT=0x0A00
-        WINVER=0x0A00)
-    target_sources(connecttool-qt PRIVATE
-        src/windows_accessibility_guard.h
-        src/windows_accessibility_guard.cpp
-        src/windows_crash_handler.h
-        src/windows_crash_handler.cpp
-        src/windows_renderer_supervisor.h
-        src/windows_renderer_supervisor.cpp
-        tun/windows_network_config.h
-        tun/windows_network_config.cpp
-        tun/tun_windows.cpp
-        src/firewall_windows.cpp
-        resources/connecttool.rc)
-elseif(APPLE)
-    target_sources(connecttool-qt PRIVATE
-        tun/tun_macos.cpp
-        tun/tun_privileged_helper.cpp)
-else()
-    target_sources(connecttool-qt PRIVATE tun/tun_linux.cpp)
-endif()
-
-if(APPLE)
-    add_executable(connecttool-tun-daemon
-        tun/tun_macos_daemon.cpp
-        tun/tun_privileged_helper.cpp)
-    target_include_directories(connecttool-tun-daemon PRIVATE tun)
-    add_dependencies(connecttool-qt connecttool-tun-daemon)
-endif()
-
-target_include_directories(connecttool-qt PRIVATE
-    src
-    net
-    steam
-    tun)
-target_include_directories(connecttool-qt SYSTEM PRIVATE
-    third_party
-    ${STEAMWORKS_INCLUDE_DIR})
-
-# Ensure we always get a headers-only target, regardless of which Boost package layout is found.
+# Ensure we always get a headers-only target, regardless of which Boost package
+# layout is installed.
 if(NOT TARGET Boost::headers)
     if(TARGET Boost::boost)
         add_library(Boost::headers INTERFACE IMPORTED)
@@ -288,39 +75,107 @@ if(NOT TARGET Boost::headers)
     endif()
 endif()
 
+# This target deliberately stays above the Steamworks/application boundary so
+# the core preset proves the transport and VPN layers are SDK-independent.
+add_subdirectory(src/network)
+
+if(CONNECTTOOL_BUILD_BENCHMARKS)
+    add_executable(connecttool_protocol_benchmark
+        benchmarks/protocol_benchmark.cpp)
+    target_link_libraries(connecttool_protocol_benchmark PRIVATE
+        connecttool_protocol)
+    target_compile_features(connecttool_protocol_benchmark PRIVATE cxx_std_23)
+endif()
+
+add_library(connecttool_update STATIC
+    src/application/services/update_controller.cpp)
+add_library(ConnectTool::Update ALIAS connecttool_update)
+target_include_directories(connecttool_update PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_features(connecttool_update PUBLIC cxx_std_23)
+target_link_libraries(connecttool_update PUBLIC Qt6::Core Qt6::Network)
+connecttool_enable_strict_warnings(connecttool_update)
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()
+
+if(NOT CONNECTTOOL_BUILD_APPLICATION)
+    return()
+endif()
+
+find_package(Qt6 6.11.1 REQUIRED COMPONENTS Gui Qml Quick QuickControls2 Network)
+
+qt_policy(SET QTP0004 NEW)
+qt_policy(SET QTP0001 NEW)
+if(QT_KNOWN_POLICY_QTP0005)
+    qt_policy(SET QTP0005 NEW)
+endif()
+
+include(deps/cmake/QmlMaterial.cmake)
+
+# Read version from git tag if available
+set(CONNECTTOOL_VERSION "1.6.0-alpha.1")
+if(DEFINED ENV{CONNECTTOOL_VERSION})
+    set(CONNECTTOOL_VERSION "$ENV{CONNECTTOOL_VERSION}")
+endif()
+message(STATUS "ConnectTool version: ${CONNECTTOOL_VERSION}")
+include(deps/cmake/Steamworks.cmake)
+add_subdirectory(src/platform)
+add_subdirectory(src/integrations/steam)
+add_subdirectory(src/application)
+add_subdirectory(modules/ConnectTool)
+
+qt_add_executable(connecttool-qt
+    src/main.cpp
+    src/application/runtime/application_diagnostics.h
+    src/application/runtime/application_diagnostics.cpp)
+
+target_include_directories(connecttool-qt PRIVATE src modules)
+
+qt_add_resources(connecttool-qt bundled_fonts
+    PREFIX "/fonts"
+    BASE "resources/fonts"
+    FILES resources/fonts/NotoSansCJKsc-Regular.otf)
+
+qt_add_resources(connecttool-qt third_party_notices
+    PREFIX "/licenses"
+    BASE "${CMAKE_SOURCE_DIR}"
+    FILES
+        THIRD_PARTY_NOTICES.md
+        licenses/QmlMaterial-MIT.txt
+        licenses/CuteSound-NOTICE.txt
+        licenses/Apache-2.0.txt)
+
+if(APPLE)
+    set_target_properties(connecttool-qt PROPERTIES MACOSX_BUNDLE TRUE)
+    set(APP_ICON_MACOS "${CMAKE_SOURCE_DIR}/resources/ConnectTool.icns")
+    set_source_files_properties(${APP_ICON_MACOS}
+        PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+    target_sources(connecttool-qt PRIVATE ${APP_ICON_MACOS})
+    set_target_properties(connecttool-qt PROPERTIES MACOSX_BUNDLE_ICON_FILE "ConnectTool.icns")
+
+    add_executable(connecttool-tun-daemon
+        src/platform/tun/tun_macos_daemon.cpp
+        src/platform/tun/tun_privileged_helper.cpp)
+    target_include_directories(connecttool-tun-daemon PRIVATE ${CMAKE_SOURCE_DIR}/src)
+    add_dependencies(connecttool-qt connecttool-tun-daemon)
+elseif(WIN32)
+    set_target_properties(connecttool-qt PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_compile_definitions(connecttool-qt PRIVATE _WIN32_WINNT=0x0A00 WINVER=0x0A00)
+    target_sources(connecttool-qt PRIVATE resources/connecttool.rc)
+endif()
+
 target_link_libraries(connecttool-qt PRIVATE
-    connecttool_protocol
-    connecttool_update
+    connecttool_ui
+    connecttool_uiplugin
+    connecttool_application
+    connecttool_platform
     Qt6::Core
     Qt6::Gui
     Qt6::Qml
     Qt6::Quick
     Qt6::QuickControls2
-    Qt6::Network
-    Boost::headers
-    Threads::Threads
-    ${STEAMWORKS_LIBRARY})
-
-if(WIN32)
-    target_link_libraries(connecttool-qt PRIVATE
-        iphlpapi
-        ws2_32
-        dsound
-        dbghelp
-        ole32
-        oleaut32)
-elseif(APPLE)
-    find_library(COREAUDIO_LIBRARY CoreAudio)
-    find_library(AUDIOUNIT_LIBRARY AudioUnit)
-    find_library(AUDIOTOOLBOX_LIBRARY AudioToolbox)
-    target_link_libraries(connecttool-qt PRIVATE
-        ${COREAUDIO_LIBRARY}
-        ${AUDIOUNIT_LIBRARY}
-        ${AUDIOTOOLBOX_LIBRARY})
-else()
-    find_package(SDL2 REQUIRED)
-    target_link_libraries(connecttool-qt PRIVATE SDL2::SDL2)
-endif()
+    Qt6::Network)
 
 # Ensure the Steam redistributable is next to the executable at build and
 # install time, and make sure the loader can find it on macOS.
@@ -355,6 +210,7 @@ if(APPLE)
                 "$<TARGET_BUNDLE_DIR:connecttool-qt>/Contents/Resources/THIRD_PARTY_NOTICES.md"
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${CMAKE_SOURCE_DIR}/licenses/QmlMaterial-MIT.txt"
+                "${CMAKE_SOURCE_DIR}/licenses/CuteSound-NOTICE.txt"
                 "${CMAKE_SOURCE_DIR}/licenses/Apache-2.0.txt"
                 "$<TARGET_BUNDLE_DIR:connecttool-qt>/Contents/Resources/licenses"
         COMMAND install_name_tool -id
@@ -400,45 +256,6 @@ elseif(WIN32)
         BUILD_RPATH "$ORIGIN")
 endif()
 
-set_source_files_properties(qml/ConnectTool/Theme.qml
-    PROPERTIES QT_QML_SINGLETON_TYPE TRUE)
-
-qt_add_qml_module(connecttool-qt
-    URI ConnectTool
-    VERSION 1.0
-    IMPORTS
-        QtQuick.Effects
-        QtQuick.Shapes
-        QtQuick.Window
-    DEPENDENCIES
-        TARGET qml_material
-    QML_FILES
-        qml/ConnectTool/Main.qml
-        qml/ConnectTool/Theme.qml
-        qml/ConnectTool/NavigationDrawer.qml
-        qml/ConnectTool/AppCard.qml
-        qml/ConnectTool/LinkCard.qml
-        qml/ConnectTool/StatusPill.qml
-        qml/ConnectTool/Avatar.qml
-        qml/ConnectTool/ConnectionPanel.qml
-        qml/ConnectTool/PortField.qml
-        qml/ConnectTool/ChatPanel.qml
-        qml/ConnectTool/ChatMessageDelegate.qml
-        qml/ConnectTool/PeoplePanel.qml
-        qml/ConnectTool/MemberDelegate.qml
-        qml/ConnectTool/FriendDelegate.qml
-        qml/ConnectTool/RoomPage.qml
-        qml/ConnectTool/LobbyPage.qml
-        qml/ConnectTool/NetworkPage.qml
-        qml/ConnectTool/AboutPage.qml
-    RESOURCES
-        qml/ConnectTool/GitHub.svg
-        qml/ConnectTool/QQ.svg
-        qml/ConnectTool/AppIcon.png
-        qml/ConnectTool/notify.wav)
-
-# QmlMaterial is built as a static QML module. Explicitly retaining the plugin
-# pairs with Q_IMPORT_QML_PLUGIN in main.cpp even though Qt itself is shared.
 target_link_libraries(connecttool-qt PRIVATE qml_materialplugin)
 
 if(BUILD_TESTING)
@@ -451,14 +268,7 @@ endif()
 target_compile_definitions(connecttool-qt PRIVATE CONNECTTOOL_VERSION="${CONNECTTOOL_VERSION}")
 
 target_compile_features(connecttool-qt PRIVATE cxx_std_23)
-if(CONNECTTOOL_ENABLE_STRICT_WARNINGS)
-    if(MSVC)
-        target_compile_options(connecttool-qt PRIVATE /W4 /permissive-)
-    else()
-        target_compile_options(connecttool-qt PRIVATE
-            -Wall -Wextra -Wpedantic)
-    endif()
-endif()
+connecttool_enable_strict_warnings(connecttool-qt)
 
 if(DEFINED ENV{NIXPKGS_QT6_QML_IMPORT_PATH})
     target_compile_definitions(connecttool-qt PRIVATE
@@ -480,6 +290,7 @@ else()
     install(FILES THIRD_PARTY_NOTICES.md DESTINATION share/doc/connecttool-qt)
     install(FILES
         licenses/QmlMaterial-MIT.txt
+        licenses/CuteSound-NOTICE.txt
         licenses/Apache-2.0.txt
         DESTINATION share/doc/connecttool-qt/licenses)
 endif()

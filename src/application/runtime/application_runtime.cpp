@@ -1,0 +1,2157 @@
+#include "application/runtime/application_runtime.h"
+
+#include "network/tcp/tcp_tunnel_server.h"
+#include "integrations/steam/steam_networking_manager.h"
+#include "integrations/steam/steam_room_manager.h"
+#include "integrations/steam/steam_utils.h"
+#include "integrations/steam/steam_vpn_bridge.h"
+#include "integrations/steam/steam_vpn_networking_manager.h"
+#include "platform/system/platform_environment.h"
+
+#include <QClipboard>
+#include <QCoreApplication>
+#include <QDateTime>
+#include <QDesktopServices>
+#include <QDir>
+#include <QFileInfo>
+#include <QGuiApplication>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
+#include <QMetaObject>
+#include <QProcess>
+#include <QQmlEngine>
+#include <QSettings>
+#include <QUrl>
+#include <QVariantMap>
+#include <QWindow>
+#include <QtDebug>
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <isteamnetworkingutils.h>
+#include <limits>
+#include <mutex>
+#include <set>
+#include <sstream>
+#include <steam_api.h>
+#include <steamnetworkingtypes.h>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+using connecttool::network::TcpTunnelServer;
+
+#ifndef CONNECTTOOL_VERSION
+#define CONNECTTOOL_VERSION "0.0.0"
+#endif
+
+namespace {
+struct PersonaDisplay {
+  QString label;
+  bool online;
+  int priority;
+};
+
+PersonaDisplay personaStateDisplay(EPersonaState state) {
+  switch (state) {
+  case k_EPersonaStateOnline:
+    return {QCoreApplication::translate("ApplicationRuntime", "在线"), true, 0};
+  case k_EPersonaStateBusy:
+    return {QCoreApplication::translate("ApplicationRuntime", "忙碌"), true, 1};
+  case k_EPersonaStateLookingToPlay:
+    return {QCoreApplication::translate("ApplicationRuntime", "想游戏"), true, 2};
+  case k_EPersonaStateLookingToTrade:
+    return {QCoreApplication::translate("ApplicationRuntime", "想交易"), true, 3};
+  case k_EPersonaStateSnooze:
+    return {QCoreApplication::translate("ApplicationRuntime", "小憩"), true, 4};
+  case k_EPersonaStateAway:
+    return {QCoreApplication::translate("ApplicationRuntime", "离开"), true, 5};
+  case k_EPersonaStateInvisible:
+    return {QCoreApplication::translate("ApplicationRuntime", "隐身"), false, 7};
+  case k_EPersonaStateOffline:
+  default:
+    return {QCoreApplication::translate("ApplicationRuntime", "离线"), false, 8};
+  }
+}
+
+QString defaultRoomName() {
+  QString ownerName;
+  if (SteamFriends()) {
+    const char *persona = SteamFriends()->GetPersonaName();
+    if (persona && persona[0] != '\0') {
+      ownerName = QString::fromUtf8(persona);
+    }
+  }
+  if (ownerName.isEmpty()) {
+    ownerName = QCoreApplication::translate("ApplicationRuntime", "ConnectTool");
+  }
+  return QCoreApplication::translate("ApplicationRuntime", "%1 的房间").arg(ownerName);
+}
+
+void steamWarningHook(int /*severity*/, const char *msg) { qDebug() << "[SteamAPI]" << msg; }
+
+void steamNetDebugHook(ESteamNetworkingSocketsDebugOutputType /*type*/, const char *msg) {
+  static QString lastMsg;
+  static int repeatCount = 0;
+  static auto lastLog = std::chrono::steady_clock::now();
+
+  const QString current = QString::fromUtf8(msg ? msg : "");
+  const auto now = std::chrono::steady_clock::now();
+
+  if (current == lastMsg && now - lastLog < std::chrono::seconds(2)) {
+    ++repeatCount;
+    return;
+  }
+
+  if (repeatCount > 0 && !lastMsg.isEmpty()) {
+    qDebug() << "[SteamNet]" << lastMsg << "(repeated" << repeatCount << "times)";
+  }
+
+  repeatCount = 0;
+  lastMsg = current;
+  lastLog = now;
+
+  qDebug() << "[SteamNet]" << current;
+}
+
+QString renderPopId(SteamNetworkingPOPID pop) {
+  SteamNetworkingPOPIDRender render(pop);
+  const char *text = render.c_str();
+  if (text && text[0] != '\0') {
+    return QString::fromLatin1(text);
+  }
+  return QStringLiteral("0x%1").arg(static_cast<uint32_t>(pop), 8, 16, QLatin1Char('0')).toUpper();
+}
+
+} // namespace
+
+ApplicationRuntime::ApplicationRuntime(QObject *parent)
+    : QObject(parent), steamReady_(false), localPort_(25565), localBindPort_(8888),
+      lastTcpClients_(0), lastMemberLogCount_(-1),
+      roomName_(QCoreApplication::translate("ApplicationRuntime", "ConnectTool 房间")),
+      appVersion_(QStringLiteral(CONNECTTOOL_VERSION)), updateController_(appVersion_) {
+  // Set a default app id so Steam can bootstrap in development environments
+  qputenv("SteamAppId", QByteArray("480"));
+  qputenv("SteamGameId", QByteArray("480"));
+  connect(&updateController_, &UpdateController::infoChanged, this, &ApplicationRuntime::updateInfoChanged);
+  connect(&updateController_, &UpdateController::downloadChanged, this,
+          &ApplicationRuntime::updateDownloadChanged);
+
+  workGuard_ =
+      std::make_unique<boost::asio::executor_work_guard<boost::asio::io_context::executor_type>>(
+          boost::asio::make_work_guard(ioContext_));
+  ioThread_ = std::jthread([this](std::stop_token) { ioContext_.run(); });
+
+  lobbiesModel_.setFilter(lobbyFilter_);
+  lobbiesModel_.setSortMode(lobbySortMode_);
+
+  connect(&callbackTimer_, &QTimer::timeout, this, &ApplicationRuntime::tick);
+  connect(&slowTimer_, &QTimer::timeout, this, &ApplicationRuntime::refreshFriends);
+  friendsRefreshResetTimer_.setSingleShot(true);
+  connect(&friendsRefreshResetTimer_, &QTimer::timeout, this,
+          [this]() { setFriendsRefreshing(false); });
+  statusOverrideTimer_.setSingleShot(true);
+  connect(&statusOverrideTimer_, &QTimer::timeout, this, [this]() { clearStatusOverride(); });
+  connect(&steamCheckTimer_, &QTimer::timeout, this, [this]() {
+    if (steamReady_) {
+      steamCheckTimer_.stop();
+      return;
+    }
+    tryInitializeSteam();
+  });
+
+  connect(&cooldownTimer_, &QTimer::timeout, this, [this]() {
+    bool anyChanged = false;
+    int maxCooldown = 0;
+    std::vector<std::pair<uint64_t, int>> updates;
+    for (auto it = inviteCooldowns_.begin(); it != inviteCooldowns_.end();) {
+      if (it->second > 0) {
+        it->second -= 1;
+        updates.emplace_back(it->first, it->second);
+        if (it->second == 0) {
+          it = inviteCooldowns_.erase(it);
+        } else {
+          maxCooldown = std::max(maxCooldown, it->second);
+          ++it;
+        }
+        anyChanged = true;
+      } else {
+        it = inviteCooldowns_.erase(it);
+      }
+    }
+    for (const auto &update : updates) {
+      updateFriendCooldown(QString::number(update.first), update.second);
+    }
+    if (inviteCooldownSeconds_ != maxCooldown) {
+      inviteCooldownSeconds_ = maxCooldown;
+      emit inviteCooldownChanged();
+    }
+    if (!anyChanged && inviteCooldownSeconds_ != 0) {
+      inviteCooldownSeconds_ = 0;
+      emit inviteCooldownChanged();
+    }
+  });
+
+  updateStatus();
+}
+
+ApplicationRuntime::~ApplicationRuntime() {
+  stopVpn();
+  callbackTimer_.stop();
+  slowTimer_.stop();
+  steamCheckTimer_.stop();
+
+  if (steamManager_) {
+    steamManager_->stopMessageHandler();
+  }
+
+  if (server_) {
+    server_->stop();
+    server_.reset();
+  }
+
+  if (workGuard_) {
+    workGuard_->reset();
+  }
+
+  ioContext_.stop();
+  if (ioThread_.joinable()) {
+    ioThread_.request_stop();
+    ioThread_.join();
+  }
+
+  // Destroy callback owners while the Steam API is still available.  The
+  // primary manager shuts the API down, so it must be released last.
+  roomManager_.reset();
+  vpnBridge_.reset();
+  vpnManager_.reset();
+  steamManager_.reset();
+}
+
+void ApplicationRuntime::initializeSound(QWindow *window) {
+  mainWindow_ = window;
+  soundNotifier_.initialize(window);
+}
+
+bool ApplicationRuntime::isHost() const {
+  if (!steamReady_) {
+    return false;
+  }
+  if (inTunMode()) {
+    return vpnHosting_;
+  }
+  return steamManager_ && steamManager_->isHost();
+}
+
+bool ApplicationRuntime::isConnected() const {
+  if (!steamReady_) {
+    return false;
+  }
+  if (inTunMode()) {
+    return vpnConnected_;
+  }
+  return steamManager_ && steamManager_->isConnected();
+}
+
+void ApplicationRuntime::startServices() {
+  if (std::exchange(servicesStarted_, true)) {
+    return;
+  }
+
+  qInfo() << "[Startup] Starting background and Steam services after the UI is visible.";
+  tryInitializeSteam();
+
+#ifdef Q_OS_MACOS
+  QTimer::singleShot(0, this, &ApplicationRuntime::ensureTunHelperInstalled);
+#endif
+
+  callbackTimer_.start(16);
+  slowTimer_.start(15000);
+  steamCheckTimer_.start(3000);
+  cooldownTimer_.start(1000);
+}
+
+QString ApplicationRuntime::lobbyId() const {
+  if (!roomManager_) {
+    return {};
+  }
+  CSteamID lobby = roomManager_->getCurrentLobby();
+  return lobby.IsValid() ? QString::number(lobby.ConvertToUint64()) : QString();
+}
+
+QString ApplicationRuntime::selfSteamId() const { return selfSteamId_; }
+
+QString ApplicationRuntime::lobbyName() const {
+  if (!steamReady_ || !roomManager_ || !SteamMatchmaking()) {
+    return {};
+  }
+
+  const std::string name = roomManager_->getLobbyName();
+  if (!name.empty()) {
+    return QString::fromUtf8(name.c_str());
+  }
+
+  CSteamID lobby = roomManager_->getCurrentLobby();
+  if (lobby.IsValid()) {
+    CSteamID owner = SteamMatchmaking()->GetLobbyOwner(lobby);
+    if (owner.IsValid() && SteamFriends()) {
+      const char *ownerName = SteamFriends()->GetFriendPersonaName(owner);
+      if (ownerName && ownerName[0] != '\0') {
+        return QCoreApplication::translate("ApplicationRuntime", "%1 的房间")
+            .arg(QString::fromUtf8(ownerName));
+      }
+    }
+  }
+  return {};
+}
+
+int ApplicationRuntime::tcpClients() const { return server_ ? server_->getClientCount() : 0; }
+
+void ApplicationRuntime::setJoinTarget(const QString &id) {
+  if (joinTarget_ == id) {
+    return;
+  }
+  joinTarget_ = id;
+  if (joinTarget_ != lastAutoJoinTarget_) {
+    lastAutoJoinTarget_.clear();
+  }
+  emit joinTargetChanged();
+}
+
+void ApplicationRuntime::setJoinTargetFromLobby(const QString &id) {
+  lastAutoJoinTarget_ = id;
+  setJoinTarget(id);
+}
+
+void ApplicationRuntime::setPublishLobby(bool publish) {
+  if (publishLobby_ == publish) {
+    return;
+  }
+  publishLobby_ = publish;
+  emit publishLobbyChanged();
+  if (roomManager_) {
+    roomManager_->setPublishLobby(publishLobby_);
+    roomManager_->refreshLobbyMetadata();
+  }
+}
+
+void ApplicationRuntime::setLocalPort(int port) {
+  port = std::max(0, port);
+  if (localPort_ == port) {
+    return;
+  }
+  localPort_ = port;
+  emit localPortChanged();
+}
+
+void ApplicationRuntime::setLocalBindPort(int port) {
+  port = std::clamp(port, 1, 65535);
+  if (localBindPort_ == port) {
+    return;
+  }
+  localBindPort_ = port;
+  emit localBindPortChanged();
+}
+
+bool ApplicationRuntime::tryInitializeSteam() {
+  if (steamReady_) {
+    return true;
+  }
+
+  // Clean up any partial state before retrying.
+  localPingLocationReady_ = false;
+  lobbyLatencyRefreshPending_ = false;
+  steamManager_.reset();
+  roomManager_.reset();
+
+  connecttool::platform::prepareSteamEnvironment();
+
+  qInfo() << "[Startup] Calling SteamAPI_Init.";
+  steamReady_ = SteamAPI_Init();
+  if (!steamReady_) {
+    status_ = tr("无法初始化 Steam API，请确认客户端已登录。");
+    emit stateChanged();
+    return false;
+  }
+  qInfo() << "[Startup] Steam API initialized.";
+  refreshSelfSteamId();
+
+  if (SteamClient()) {
+    SteamClient()->SetWarningMessageHook(&steamWarningHook);
+  }
+  if (SteamNetworkingUtils()) {
+    SteamNetworkingUtils()->SetDebugOutputFunction(k_ESteamNetworkingSocketsDebugOutputType_Msg,
+                                                   &steamNetDebugHook);
+  }
+
+  roomName_ = defaultRoomName();
+  emit roomNameChanged();
+
+  steamManager_ = std::make_unique<SteamNetworkingManager>();
+  qInfo() << "[Startup] Initializing Steam networking interfaces.";
+  if (!steamManager_->initialize()) {
+    status_ = tr("Steam 网络初始化失败。");
+    steamReady_ = false;
+    steamManager_.reset();
+    emit stateChanged();
+    return false;
+  }
+
+  qInfo() << "[Startup] Registering Steam lobby callbacks.";
+  roomManager_ = std::make_unique<SteamRoomManager>(steamManager_.get());
+  qInfo() << "[Startup] Steam lobby callbacks registered.";
+  steamManager_->setRoomManager(roomManager_.get());
+  roomManager_->setAdvertisedMode(inTunMode());
+  roomManager_->setLobbyName(roomName_.toStdString());
+  roomManager_->setPublishLobby(publishLobby_);
+  roomManager_->setLobbyInviteCallback([this](const CSteamID &lobby) {
+    const QString lobbyStr = QString::number(lobby.ConvertToUint64());
+    QMetaObject::invokeMethod(
+        this,
+        [this, lobbyStr]() {
+          setJoinTargetFromLobby(lobbyStr);
+          joinLobby(lobbyStr);
+        },
+        Qt::QueuedConnection);
+  });
+  roomManager_->setLobbyModeChangedCallback([this](bool wantsTun, const CSteamID &lobby) {
+    QMetaObject::invokeMethod(
+        this, [this, wantsTun, lobby]() { handleLobbyModeChanged(wantsTun, lobby); },
+        Qt::QueuedConnection);
+  });
+  roomManager_->setHostLeftCallback([this]() {
+    QMetaObject::invokeMethod(this, [this]() { disconnect(); }, Qt::QueuedConnection);
+  });
+  roomManager_->setChatMessageCallback([this](const CSteamID &sender, const std::string &payload) {
+    const uint64_t senderId = sender.ConvertToUint64();
+    const QString text = QString::fromUtf8(payload.data(), static_cast<int>(payload.size()));
+    QMetaObject::invokeMethod(
+        this, [this, senderId, text]() { handleChatMessage(senderId, text); },
+        Qt::QueuedConnection);
+  });
+  roomManager_->setPinnedMessageChangedCallback([this](const std::string &payload) {
+    const QString text = QString::fromUtf8(payload.data(), static_cast<int>(payload.size()));
+    QMetaObject::invokeMethod(
+        this, [this, text]() { handlePinnedMessageMetadata(text); }, Qt::QueuedConnection);
+  });
+  roomManager_->setLobbyListCallback(
+      [this](const std::vector<SteamRoomManager::LobbyInfo> &lobbies) {
+        QMetaObject::invokeMethod(
+            this,
+            [this, lobbies]() {
+              updateLobbiesList(lobbies);
+              setLobbyRefreshing(false);
+            },
+            Qt::QueuedConnection);
+      });
+
+  steamManager_->setMessageHandlerDependencies(ioContext_, server_, localPort_, localBindPort_);
+  steamManager_->startMessageHandler();
+  qInfo() << "[Startup] Steam message handler started.";
+
+  refreshSelfSteamId();
+  refreshFriends();
+  updateMembersList();
+  refreshHostId();
+  updateStatus();
+  emit stateChanged();
+  qInfo() << "[Startup] Steam services are ready.";
+  return true;
+}
+
+bool ApplicationRuntime::ensureSteamReady(const QString &actionLabel) {
+  if (!steamReady_) {
+    tryInitializeSteam();
+  }
+  if (steamReady_) {
+    return true;
+  }
+  qWarning().noquote() << "Cannot" << actionLabel << "because Steam is not initialized.";
+  return false;
+}
+
+bool ApplicationRuntime::hasAdminPrivileges() const { return connecttool::platform::hasTunPrivileges(); }
+
+#ifdef Q_OS_MACOS
+void ApplicationRuntime::ensureTunHelperInstalled() {
+  if (tunHelperInstallAttempted_) {
+    return;
+  }
+  tunHelperInstallAttempted_ = true;
+  if (connecttool::platform::hasTunPrivileges()) {
+    return;
+  }
+
+  const QString helperPath =
+      connecttool::platform::locateBundledHelperAsset(QStringLiteral("connecttool-tun-daemon"));
+  const QString plistPath = connecttool::platform::locateBundledHelperAsset(
+      QStringLiteral("com.connecttool.tunhelper.plist"));
+  if (helperPath.isEmpty() || plistPath.isEmpty()) {
+    qWarning() << "TUN helper assets not found; skipping auto install.";
+    return;
+  }
+
+  const QString helperDest =
+      QStringLiteral("/Library/PrivilegedHelperTools/connecttool-tun-daemon");
+  const QString plistDest =
+      QStringLiteral("/Library/LaunchDaemons/com.connecttool.tunhelper.plist");
+
+  QString command =
+      QStringLiteral("/bin/mkdir -p /Library/PrivilegedHelperTools /Library/LaunchDaemons; "
+                     "/bin/cp -f %1 %2; /bin/chmod 755 %2; "
+                     "/bin/cp -f %3 %4; /bin/chmod 644 %4; "
+                     "/bin/launchctl bootstrap system %4 2>/dev/null || "
+                     "/bin/launchctl load -w %4; "
+                     "/bin/launchctl kickstart -k system/com.connecttool.tunhelper "
+                     "2>/dev/null || true")
+          .arg(connecttool::platform::shellEscape(helperPath),
+               connecttool::platform::shellEscape(helperDest),
+               connecttool::platform::shellEscape(plistPath),
+               connecttool::platform::shellEscape(plistDest));
+
+  const QString appleScript = QStringLiteral("do shell script \"%1\" with administrator privileges")
+                                  .arg(connecttool::platform::appleScriptEscape(command));
+
+  auto *process = new QProcess(this);
+  connect(process, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+          [process](int exitCode, QProcess::ExitStatus status) {
+            if (status != QProcess::NormalExit || exitCode != 0) {
+              qWarning() << "TUN helper install failed with code" << exitCode;
+            }
+            process->deleteLater();
+          });
+  process->start(QStringLiteral("/usr/bin/osascript"), {QStringLiteral("-e"), appleScript});
+  if (!process->waitForStarted(2000)) {
+    qWarning() << "Failed to launch osascript for TUN helper install.";
+    process->deleteLater();
+  }
+}
+#endif
+
+bool ApplicationRuntime::ensureTunPrivileges() {
+  if (hasAdminPrivileges()) {
+    return true;
+  }
+  emit adminPrivilegesRequired();
+  emit tunStartDenied();
+  vpnWanted_ = false;
+  vpnHosting_ = false;
+  vpnStartAttempted_ = false;
+  emit stateChanged();
+  return false;
+}
+
+void ApplicationRuntime::startHosting() {
+  qInfo() << "[Session] Create room requested in" << (inTunMode() ? "TUN" : "TCP") << "mode.";
+  if (!ensureSteamReady(QStringLiteral("host a room"))) {
+    return;
+  }
+  if (isHost()) {
+    qWarning() << "A room is already being hosted.";
+    return;
+  }
+  if (isConnected()) {
+    qWarning() << "A room connection is already active; disconnect first.";
+    return;
+  }
+
+  if (roomManager_) {
+    roomManager_->setAdvertisedMode(inTunMode());
+  }
+
+  if (inTunMode()) {
+    if (!ensureTunPrivileges()) {
+      return;
+    }
+    ensureVpnSetup();
+    if (!vpnManager_ || !vpnBridge_) {
+      return;
+    }
+    vpnWanted_ = true;
+    vpnHosting_ = true;
+    if (!startVpnBridge()) {
+      qWarning() << "Failed to start the TUN device; check privileges and driver availability.";
+      vpnHosting_ = false;
+      return;
+    }
+    if (roomManager_ && roomManager_->startHosting()) {
+      vpnConnected_ = true;
+      vpnBridge_->rebroadcastState();
+      updateStatus();
+      refreshLobbies();
+    } else {
+      qWarning() << "Failed to create the room; check Steam state.";
+      vpnHosting_ = false;
+    }
+    return;
+  }
+
+  qInfo() << "[Session] Requesting a Steam lobby and TCP P2P listener.";
+  if (roomManager_ && roomManager_->startHosting()) {
+    steamManager_->setHostSteamID(SteamUser()->GetSteamID());
+    // The host-side target is always reached through 127.0.0.1. No inbound
+    // Windows firewall exception is required for this connection.
+    qInfo() << "[Session] Steam accepted the room request; waiting for the lobby callback.";
+    updateStatus();
+    refreshLobbies();
+  } else {
+    qWarning() << "Failed to create the room; check Steam state.";
+  }
+}
+
+void ApplicationRuntime::ensureServerRunning() {
+  if (server_) {
+    return;
+  }
+  server_ = std::make_unique<TcpTunnelServer>(
+      localBindPort_, [manager = steamManager_.get()](auto socket, auto onClosed) {
+        return manager->registerTcpClient(std::move(socket), std::move(onClosed));
+      });
+  server_->setClientCountCallback([this](int count) {
+    QMetaObject::invokeMethod(
+        this,
+        [this, count]() {
+          lastTcpClients_ = count;
+          emit serverChanged();
+          updateStatus();
+        },
+        Qt::QueuedConnection);
+  });
+  if (!server_->start()) {
+    qWarning() << "Failed to start the local TCP server.";
+    server_.reset();
+    lastTcpClients_ = 0;
+  }
+  emit serverChanged();
+}
+
+void ApplicationRuntime::ensureVpnSetup() {
+  if (!vpnManager_) {
+    vpnManager_ = std::make_unique<SteamVpnNetworkingManager>();
+    if (!vpnManager_->initialize()) {
+      qWarning() << "Failed to initialize Steam VPN networking.";
+      vpnManager_.reset();
+      return;
+    }
+  }
+  if (!vpnBridge_) {
+    vpnBridge_ = std::make_unique<SteamVpnBridge>(vpnManager_.get());
+    vpnManager_->setVpnBridge(vpnBridge_.get());
+  }
+  if (roomManager_) {
+    roomManager_->setVpnMode(inTunMode(), vpnManager_.get());
+  }
+  vpnManager_->startMessageHandler();
+}
+
+void ApplicationRuntime::stopVpn() {
+  vpnConnected_ = false;
+  vpnHosting_ = false;
+  vpnStartAttempted_ = false;
+  tunLocalIp_.clear();
+  tunDeviceName_.clear();
+  refreshSelfSteamId();
+  if (vpnManager_) {
+    vpnManager_->stopMessageHandler();
+    vpnManager_->clearPeers();
+  }
+  if (vpnBridge_) {
+    vpnBridge_->stop();
+  }
+  if (roomManager_) {
+    roomManager_->setVpnMode(false, vpnManager_.get());
+  }
+}
+
+void ApplicationRuntime::syncVpnPeers() {
+  if (!inTunMode() || !vpnManager_ || !roomManager_) {
+    return;
+  }
+  CSteamID currentLobby = roomManager_->getCurrentLobby();
+  if (!currentLobby.IsValid()) {
+    return;
+  }
+  std::set<CSteamID> desired;
+  if (SteamUser()) {
+    const CSteamID myId = SteamUser()->GetSteamID();
+    for (const auto &member : roomManager_->getLobbyMembers()) {
+      if (member != myId) {
+        desired.insert(member);
+      }
+    }
+  }
+  vpnManager_->syncPeers(desired);
+}
+
+void ApplicationRuntime::updateVpnInfo() {
+  if (!vpnBridge_) {
+    return;
+  }
+  const QString nextIp = QString::fromStdString(vpnBridge_->getLocalIP()).trimmed();
+  const QString nextDev = QString::fromStdString(vpnBridge_->getTunDeviceName()).trimmed();
+  bool changed = false;
+  if (nextIp != tunLocalIp_) {
+    tunLocalIp_ = nextIp;
+    changed = true;
+    if (!nextIp.isEmpty()) {
+      qInfo() << "[TUN] Virtual interface configured with address" << nextIp;
+    }
+  }
+  if (nextDev != tunDeviceName_) {
+    tunDeviceName_ = nextDev;
+    changed = true;
+  }
+  if (changed) {
+    emit stateChanged();
+  }
+}
+
+void ApplicationRuntime::joinHost() {
+  if (!ensureSteamReady(QStringLiteral("join a room"))) {
+    return;
+  }
+  if (isConnected()) {
+    qWarning() << "A room connection is already active; disconnect first.";
+    return;
+  }
+
+  clearStatusOverride();
+  const auto markNotFound = [this]() { setStatusOverride(tr("房间不存在。")); };
+  const QString trimmedTarget = joinTarget_.trimmed();
+  if (trimmedTarget.isEmpty()) {
+    startHosting();
+    return;
+  }
+
+  bool ok = false;
+  const uint64 hostID = trimmedTarget.toULongLong(&ok);
+  if (!ok) {
+    markNotFound();
+    qWarning() << "The requested room was not found.";
+    return;
+  }
+
+  CSteamID targetSteamID(hostID);
+  if (!targetSteamID.IsValid()) {
+    markNotFound();
+    qWarning() << "The requested room was not found.";
+    return;
+  }
+
+  const bool targetIsLobby = targetSteamID.IsLobby();
+  const bool targetIsUser = targetSteamID.BIndividualAccount();
+  if (!targetIsLobby && !targetIsUser) {
+    markNotFound();
+    qWarning() << "The requested room was not found.";
+    return;
+  }
+
+  if (targetIsLobby) {
+    applyLobbyModePreference(targetSteamID);
+  }
+
+  if (inTunMode()) {
+    if (!ensureTunPrivileges()) {
+      return;
+    }
+    ensureVpnSetup();
+    if (!vpnManager_ || !vpnBridge_) {
+      return;
+    }
+    vpnWanted_ = true;
+    if (targetIsLobby) {
+      if (roomManager_ && roomManager_->getCurrentLobby().IsValid()) {
+        roomManager_->leaveLobby();
+      }
+      setJoinTargetFromLobby(trimmedTarget);
+      if (roomManager_ && roomManager_->joinLobby(targetSteamID)) {
+        if (!startVpnBridge()) {
+          qWarning() << "Failed to start the TUN device; check privileges and driver availability.";
+          return;
+        }
+        vpnHosting_ = false;
+        vpnConnected_ = true;
+        vpnBridge_->rebroadcastState();
+        updateStatus();
+        refreshLobbies();
+      } else {
+        qWarning() << "Failed to join the room.";
+      }
+    } else if (targetIsUser) {
+      if (!startVpnBridge()) {
+        qWarning() << "Failed to start the TUN device; check privileges and driver availability.";
+        return;
+      }
+      vpnManager_->addPeer(targetSteamID);
+      hostSteamId_ = QString::number(targetSteamID.ConvertToUint64());
+      emit hostSteamIdChanged();
+      vpnHosting_ = false;
+      vpnConnected_ = true;
+      updateStatus();
+      refreshLobbies();
+    }
+    return;
+  }
+
+  // TCP 模式
+  if (targetIsLobby) {
+    if (roomManager_ && roomManager_->getCurrentLobby().IsValid()) {
+      roomManager_->leaveLobby();
+    }
+    setJoinTargetFromLobby(trimmedTarget);
+    if (roomManager_ && roomManager_->joinLobby(targetSteamID)) {
+      updateStatus();
+      refreshLobbies();
+    } else {
+      qWarning() << "Failed to join the room.";
+    }
+    return;
+  }
+
+  if (steamManager_->joinHost(hostID)) {
+    ensureServerRunning();
+    updateStatus();
+    refreshLobbies();
+  } else {
+    qWarning() << "Failed to connect to the room host.";
+  }
+}
+
+void ApplicationRuntime::joinLobby(const QString &lobbyId) {
+  if (!ensureSteamReady(QStringLiteral("join a lobby"))) {
+    return;
+  }
+  const QString trimmedId = lobbyId.trimmed();
+  bool ok = false;
+  const uint64 idValue = trimmedId.toULongLong(&ok);
+  if (!ok) {
+    qWarning() << "Invalid room ID.";
+    return;
+  }
+
+  CSteamID lobby(idValue);
+  if (!lobby.IsValid() || !lobby.IsLobby()) {
+    qWarning() << "Enter a valid room ID.";
+    return;
+  }
+
+  if (isHost() || isConnected()) {
+    disconnect();
+  }
+
+  applyLobbyModePreference(lobby);
+
+  if (inTunMode()) {
+    if (!ensureTunPrivileges()) {
+      return;
+    }
+    ensureVpnSetup();
+    if (!vpnManager_ || !vpnBridge_) {
+      return;
+    }
+    vpnWanted_ = true;
+    if (roomManager_ && roomManager_->getCurrentLobby().IsValid()) {
+      roomManager_->leaveLobby();
+    }
+    setJoinTargetFromLobby(trimmedId);
+    if (roomManager_ && roomManager_->joinLobby(lobby)) {
+      if (!startVpnBridge()) {
+        qWarning() << "Failed to start the TUN device; check privileges and driver availability.";
+        return;
+      }
+      vpnHosting_ = false;
+      vpnConnected_ = true;
+      vpnBridge_->rebroadcastState();
+      updateStatus();
+      refreshLobbies();
+    } else {
+      qWarning() << "Failed to join the room.";
+    }
+    return;
+  }
+
+  if (isHost() || isConnected()) {
+    disconnect();
+  }
+  if (roomManager_ && roomManager_->getCurrentLobby().IsValid()) {
+    roomManager_->leaveLobby();
+  }
+
+  setJoinTargetFromLobby(trimmedId);
+  if (roomManager_ && roomManager_->joinLobby(lobby)) {
+    updateStatus();
+    refreshLobbies();
+  } else {
+    qWarning() << "Failed to join the room.";
+  }
+}
+
+void ApplicationRuntime::disconnect() {
+  const bool wasHost = isHost();
+  const QString prevLobbyId = lobbyId();
+  const int prevMemberCount = membersModel_.count();
+  QString mySteamId;
+  mySteamId = selfSteamId();
+
+  if (roomManager_) {
+    roomManager_->leaveLobby();
+  }
+  if (steamManager_) {
+    steamManager_->disconnect();
+  }
+  if (server_) {
+    server_->stop();
+    server_.reset();
+    lastTcpClients_ = 0;
+    emit serverChanged();
+  }
+  updateMembersList();
+  updateStatus();
+  updateLobbyInfoSignals();
+  setLobbyRefreshing(false);
+
+  setJoinTarget(QString());
+  lastAutoJoinTarget_.clear();
+  chatModel_.clear();
+
+  if (wasHost && !mySteamId.isEmpty()) {
+    lobbiesModel_.removeByHostId(mySteamId);
+  } else if (!prevLobbyId.isEmpty() && prevMemberCount > 0) {
+    lobbiesModel_.adjustMemberCount(prevLobbyId, -1);
+  }
+
+  if (inTunMode()) {
+    vpnWanted_ = false;
+    stopVpn();
+  }
+}
+
+void ApplicationRuntime::refreshFriends() {
+  if (!steamReady_ || !steamManager_) {
+    setFriendsRefreshing(false);
+    return;
+  }
+  setFriendsRefreshing(true);
+  QVariantList updated;
+  std::vector<FriendsModel::Entry> modelData;
+  for (const auto &friendInfo : SteamUtils::getFriendsList()) {
+    const QString steamId = QString::number(friendInfo.id.ConvertToUint64());
+    const QString displayName = QString::fromStdString(friendInfo.name);
+    const QString avatar = QString::fromStdString(friendInfo.avatarDataUrl);
+    const PersonaDisplay persona = personaStateDisplay(friendInfo.personaState);
+    const auto cooldownIt = inviteCooldowns_.find(friendInfo.id.ConvertToUint64());
+    const int friendCooldown = cooldownIt != inviteCooldowns_.end() ? cooldownIt->second : 0;
+
+    QVariantMap entry;
+    entry.insert(QStringLiteral("id"), steamId);
+    entry.insert(QStringLiteral("name"), displayName);
+    entry.insert(QStringLiteral("status"), persona.label);
+    entry.insert(QStringLiteral("online"), persona.online);
+    entry.insert(QStringLiteral("cooldown"), friendCooldown);
+    if (!avatar.isEmpty()) {
+      entry.insert(QStringLiteral("avatar"), avatar);
+    }
+    updated.push_back(entry);
+    modelData.push_back({steamId, displayName, avatar, persona.online, persona.label,
+                         persona.priority, friendCooldown});
+  }
+  friendsModel_.setFriends(std::move(modelData));
+  if (updated != friends_) {
+    friends_ = updated;
+    emit friendsChanged();
+  }
+  friendsRefreshResetTimer_.start(1500);
+}
+
+void ApplicationRuntime::refreshLobbies() {
+  if (!ensureSteamReady(QStringLiteral("refresh the lobby list"))) {
+    return;
+  }
+  if (roomManager_ && roomManager_->searchLobbies()) {
+    setLobbyRefreshing(true);
+  } else {
+    qWarning() << "Failed to request the Steam lobby list.";
+    setLobbyRefreshing(false);
+  }
+}
+
+void ApplicationRuntime::setFriendFilter(const QString &text) {
+  if (friendFilter_ == text) {
+    return;
+  }
+  friendFilter_ = text;
+  friendsModel_.setFilter(friendFilter_);
+  emit friendFilterChanged();
+}
+
+void ApplicationRuntime::setChatReminderEnabled(bool enabled) {
+  if (chatReminderEnabled_ == enabled) {
+    return;
+  }
+  chatReminderEnabled_ = enabled;
+  emit chatReminderEnabledChanged();
+}
+
+void ApplicationRuntime::refreshSelfSteamId() {
+  QString nextId;
+  if (steamReady_ && SteamUser()) {
+    nextId = QString::number(SteamUser()->GetSteamID().ConvertToUint64());
+  }
+  if (nextId == selfSteamId_) {
+    return;
+  }
+  selfSteamId_ = nextId;
+  emit stateChanged();
+  updateMembersList();
+}
+
+void ApplicationRuntime::requestUserAttention() {
+  if (!mainWindow_) {
+    return;
+  }
+  // Only nudge the user when the window is not already active.
+  if (QGuiApplication::applicationState() == Qt::ApplicationActive && mainWindow_->isActive()) {
+    return;
+  }
+  mainWindow_->alert(0);
+}
+
+void ApplicationRuntime::setLobbyFilter(const QString &text) {
+  if (lobbyFilter_ == text) {
+    return;
+  }
+  lobbyFilter_ = text;
+  lobbiesModel_.setFilter(lobbyFilter_);
+  emit lobbyFilterChanged();
+}
+
+void ApplicationRuntime::setLobbySortMode(int mode) {
+  mode = std::clamp(mode, static_cast<int>(LobbiesModel::SortByMembers),
+                    static_cast<int>(LobbiesModel::SortByPing));
+  if (lobbySortMode_ == mode) {
+    return;
+  }
+  lobbySortMode_ = mode;
+  lobbiesModel_.setSortMode(lobbySortMode_);
+  emit lobbySortModeChanged();
+}
+
+void ApplicationRuntime::setConnectionMode(int mode) {
+  ConnectionMode next = ConnectionMode::Tcp;
+  if (mode == static_cast<int>(ConnectionMode::Tun)) {
+    next = ConnectionMode::Tun;
+  }
+  if (connectionMode_ == next) {
+    return;
+  }
+  if (isHost() || isConnected()) {
+    qWarning() << "Disconnect before switching connection modes.";
+    return;
+  }
+  if (next == ConnectionMode::Tcp) {
+    stopVpn();
+    vpnWanted_ = false;
+  }
+  connectionMode_ = next;
+  if (roomManager_) {
+    roomManager_->setVpnMode(inTunMode(), vpnManager_.get());
+    roomManager_->setAdvertisedMode(inTunMode());
+  }
+  if (next == ConnectionMode::Tun) {
+    vpnStartAttempted_ = false;
+  }
+  updateStatus();
+  emit stateChanged();
+}
+
+bool ApplicationRuntime::applyLobbyModePreference(const CSteamID &lobby) {
+  if (!roomManager_ || !lobby.IsValid() || !lobby.IsLobby()) {
+    return false;
+  }
+  const bool wantsTun = roomManager_->lobbyWantsTun(lobby);
+  const ConnectionMode desired = wantsTun ? ConnectionMode::Tun : ConnectionMode::Tcp;
+  if (connectionMode_ != desired) {
+    setConnectionMode(static_cast<int>(desired));
+  }
+  return wantsTun;
+}
+
+void ApplicationRuntime::handleLobbyModeChanged(bool wantsTun, const CSteamID &lobby) {
+  if (!roomManager_ || lobby != roomManager_->getCurrentLobby()) {
+    return;
+  }
+  // Always track host-advertised mode so metadata stays correct if we later
+  // refresh it (e.g. host re-publishes).
+  roomManager_->setAdvertisedMode(wantsTun);
+  if (wantsTun && !ensureTunPrivileges()) {
+    return;
+  }
+  // Host advertises TCP, but UI was in TUN: fall back to TCP.
+  if (!wantsTun && connectionMode_ == ConnectionMode::Tun) {
+    if (isHost()) {
+      return;
+    }
+    vpnWanted_ = false;
+    stopVpn();
+    connectionMode_ = ConnectionMode::Tcp;
+    roomManager_->setVpnMode(false, nullptr);
+    updateStatus();
+    emit stateChanged();
+    return;
+  }
+  if (!wantsTun) {
+    return;
+  }
+  // Host advertises TUN, auto-switch guests into TUN mode.
+  if (connectionMode_ == ConnectionMode::Tun) {
+    return;
+  }
+  if (isHost()) {
+    return;
+  }
+  vpnWanted_ = true;
+  connectionMode_ = ConnectionMode::Tun;
+  ensureVpnSetup();
+  roomManager_->setVpnMode(true, vpnManager_.get());
+  vpnStartAttempted_ = false;
+  // Start TUN bridge immediately so the device appears for guests.
+  if (!startVpnBridge()) {
+    qWarning() << "Failed to start the TUN device; check privileges and driver availability.";
+    return;
+  }
+  vpnHosting_ = false;
+  syncVpnPeers();
+  updateStatus();
+  emit stateChanged();
+}
+
+bool ApplicationRuntime::startVpnBridge() {
+  if (!vpnBridge_) {
+    return false;
+  }
+  if (vpnBridge_->isRunning()) {
+    return true;
+  }
+
+  vpnStartAttempted_ = true;
+  qInfo() << "[TUN] Starting the VPN bridge.";
+  if (!vpnBridge_->start()) {
+    if (!handleVpnFailure()) {
+      qWarning() << "[TUN] The VPN bridge failed without a diagnostic message.";
+    }
+    return false;
+  }
+
+  updateVpnInfo();
+  vpnConnected_ = true;
+  return true;
+}
+
+bool ApplicationRuntime::handleVpnFailure() {
+  if (!vpnBridge_) {
+    return false;
+  }
+  const auto failure = vpnBridge_->takeFailure();
+  if (!failure) {
+    return false;
+  }
+
+  const QString message = QString::fromStdString(*failure);
+  qWarning().noquote() << "[TUN]" << message;
+  if (roomManager_ && roomManager_->getCurrentLobby().IsValid()) {
+    roomManager_->leaveLobby();
+  }
+  vpnWanted_ = false;
+  stopVpn();
+  vpnStartAttempted_ = true;
+  setStatusOverride(tr("TUN 启动失败：%1").arg(message), 8000);
+  return true;
+}
+
+void ApplicationRuntime::ensureVpnRunning() {
+  if (!inTunMode()) {
+    return;
+  }
+  if (handleVpnFailure()) {
+    return;
+  }
+  if (!vpnWanted_) {
+    return;
+  }
+  ensureVpnSetup();
+  if (!vpnBridge_ || vpnBridge_->isRunning()) {
+    return;
+  }
+  if (vpnStartAttempted_) {
+    return;
+  }
+  if (!startVpnBridge()) {
+    qWarning() << "Failed to start the TUN device; check privileges and driver availability.";
+    vpnConnected_ = false;
+    return;
+  }
+  vpnHosting_ = vpnHosting_ && vpnConnected_;
+}
+
+void ApplicationRuntime::setRoomName(const QString &name) {
+  QString next = name;
+  next = next.left(64).trimmed();
+  if (roomName_ == next) {
+    return;
+  }
+  roomName_ = next;
+  emit roomNameChanged();
+  emit stateChanged();
+  if (roomManager_) {
+    roomManager_->setLobbyName(roomName_.toStdString());
+    roomManager_->refreshLobbyMetadata();
+  }
+}
+
+void ApplicationRuntime::refreshMembers() { updateMembersList(); }
+
+void ApplicationRuntime::inviteFriend(const QString &steamId) {
+  if (!ensureSteamReady(QStringLiteral("invite a friend"))) {
+    return;
+  }
+  bool ok = false;
+  uint64 friendId = steamId.toULongLong(&ok);
+  if (!ok) {
+    qWarning() << "Invalid friend ID.";
+    return;
+  }
+  auto it = inviteCooldowns_.find(friendId);
+  if (it != inviteCooldowns_.end() && it->second > 0) {
+    qWarning() << "Wait" << it->second << "seconds before sending another invite.";
+    return;
+  }
+  if (roomManager_ && roomManager_->getCurrentLobby().IsValid()) {
+    SteamMatchmaking()->InviteUserToLobby(roomManager_->getCurrentLobby(), CSteamID(friendId));
+    inviteCooldowns_[friendId] = 3;
+    inviteCooldownSeconds_ = std::max(inviteCooldownSeconds_, inviteCooldowns_[friendId]);
+    emit inviteCooldownChanged();
+    updateFriendCooldown(steamId, inviteCooldowns_[friendId]);
+  } else {
+    qWarning() << "Cannot invite a friend while no room is active.";
+  }
+}
+
+void ApplicationRuntime::addFriend(const QString &steamId) {
+  if (!ensureSteamReady(QStringLiteral("add a friend"))) {
+    return;
+  }
+  qDebug() << "[Friends] addFriend request" << steamId;
+
+  bool ok = false;
+  const uint64 targetId = steamId.toULongLong(&ok);
+  if (!ok) {
+    qDebug() << "[Friends] addFriend invalid id";
+    qWarning() << "Invalid friend ID.";
+    return;
+  }
+
+  CSteamID target(targetId);
+  if (!target.IsValid() || !target.BIndividualAccount()) {
+    qDebug() << "[Friends] addFriend invalid account";
+    qWarning() << "Invalid friend ID.";
+    return;
+  }
+
+  if (SteamUser() && target == SteamUser()->GetSteamID()) {
+    qDebug() << "[Friends] addFriend self";
+    qWarning() << "Cannot add the local Steam user as a friend.";
+    return;
+  }
+
+  if (SteamFriends() && SteamFriends()->HasFriend(target, k_EFriendFlagImmediate)) {
+    qDebug() << "[Friends] addFriend already friend";
+    qWarning() << "The Steam user is already a friend.";
+    return;
+  }
+
+  if (!SteamFriends()) {
+    qDebug() << "[Friends] addFriend missing SteamFriends";
+    qWarning() << "Failed to send the friend request; check Steam state.";
+    return;
+  }
+
+  const bool overlayEnabled = SteamUtils() && SteamUtils()->IsOverlayEnabled();
+  bool overlayInvoked = false;
+  if (overlayEnabled) {
+    qDebug() << "[Friends] opening overlay friendadd" << target.ConvertToUint64();
+    SteamFriends()->ActivateGameOverlayToUser("friendadd", target);
+    overlayInvoked = true;
+  } else {
+    qDebug() << "[Friends] overlay disabled or unavailable";
+  }
+
+  bool openedProfile = false;
+  if (!overlayInvoked) {
+    const QUrl profileUrl(QStringLiteral("https://steamcommunity.com/profiles/%1/").arg(steamId));
+    openedProfile = QDesktopServices::openUrl(profileUrl);
+    qDebug() << "[Friends] fallback openUrl (profile)" << profileUrl << "opened:" << openedProfile;
+  }
+
+  if (overlayInvoked) {
+    qInfo() << "Requested the Steam friend-add dialog.";
+  } else {
+    qInfo() << "Opened the target Steam profile for a manual friend request.";
+    if (openedProfile) {
+      setStatusOverride(tr("正在打开 Steam 个人主页…"), 2000);
+    }
+  }
+}
+
+void ApplicationRuntime::updateFriendCooldown(const QString &steamId, int seconds) {
+  friendsModel_.setInviteCooldown(steamId, seconds);
+  bool listChanged = false;
+  for (auto &entry : friends_) {
+    QVariantMap map = entry.toMap();
+    if (map.value(QStringLiteral("id")).toString() == steamId) {
+      if (map.value(QStringLiteral("cooldown")).toInt() != seconds) {
+        map.insert(QStringLiteral("cooldown"), seconds);
+        entry = map;
+        listChanged = true;
+      }
+      break;
+    }
+  }
+  if (listChanged) {
+    emit friendsChanged();
+  }
+}
+
+void ApplicationRuntime::setFriendsRefreshing(bool refreshing) {
+  if (friendsRefreshing_ == refreshing) {
+    return;
+  }
+  friendsRefreshing_ = refreshing;
+  emit friendsRefreshingChanged();
+}
+
+void ApplicationRuntime::setLobbyRefreshing(bool refreshing) {
+  if (lobbyRefreshing_ == refreshing) {
+    return;
+  }
+  lobbyRefreshing_ = refreshing;
+  emit lobbyRefreshingChanged();
+}
+
+void ApplicationRuntime::updateRelayPing() {
+  int next = -1;
+  QVariantList popList;
+
+  if (steamReady_ && SteamNetworkingUtils()) {
+    const int popCount = SteamNetworkingUtils()->GetPOPCount();
+    if (popCount > 0) {
+      std::vector<SteamNetworkingPOPID> pops(popCount);
+      const int filled = SteamNetworkingUtils()->GetPOPList(pops.data(), popCount);
+      popList.reserve(std::max(0, filled));
+      for (int i = 0; i < filled; ++i) {
+        SteamNetworkingPOPID via = 0;
+        const int ping =
+            SteamNetworkingUtils()->GetPingToDataCenter(pops[static_cast<size_t>(i)], &via);
+        const int roundTrip = ping >= 0 ? ping * 2 : -1;
+        if (roundTrip >= 0 && (next < 0 || roundTrip < next)) {
+          next = roundTrip;
+        }
+
+        QVariantMap entry;
+        entry.insert(QStringLiteral("name"), renderPopId(pops[static_cast<size_t>(i)]));
+        entry.insert(QStringLiteral("ping"), roundTrip);
+        if (via != 0) {
+          entry.insert(QStringLiteral("via"), renderPopId(via));
+        }
+        popList.push_back(entry);
+      }
+      std::sort(popList.begin(), popList.end(), [](const QVariant &a, const QVariant &b) {
+        const QVariantMap am = a.toMap();
+        const QVariantMap bm = b.toMap();
+        int ap =
+            am.value(QStringLiteral("ping"), QVariant(std::numeric_limits<int>::max())).toInt();
+        int bp =
+            bm.value(QStringLiteral("ping"), QVariant(std::numeric_limits<int>::max())).toInt();
+        if (ap < 0) {
+          ap = std::numeric_limits<int>::max();
+        }
+        if (bp < 0) {
+          bp = std::numeric_limits<int>::max();
+        }
+        return ap < bp;
+      });
+    }
+  }
+
+  if (next != relayPingMs_) {
+    relayPingMs_ = next;
+    emit relayPingChanged();
+  }
+
+  if (relayPops_ != popList) {
+    relayPops_ = popList;
+    emit relayPopsChanged();
+  }
+}
+
+void ApplicationRuntime::updateLobbyLatencyReadiness() {
+  if (!roomManager_ || !SteamNetworkingUtils()) {
+    return;
+  }
+
+  if (!localPingLocationReady_) {
+    SteamNetworkPingLocation_t local{};
+    if (SteamNetworkingUtils()->GetLocalPingLocation(local) < 0.0F) {
+      return;
+    }
+
+    localPingLocationReady_ = true;
+    lobbyLatencyRefreshPending_ = true;
+    if (isHost()) {
+      roomManager_->refreshLobbyMetadata();
+    }
+  }
+
+  if (lobbyLatencyRefreshPending_ && !lobbyRefreshing_) {
+    lobbyLatencyRefreshPending_ = false;
+    refreshLobbies();
+  }
+}
+
+void ApplicationRuntime::copyToClipboard(const QString &text) {
+  if (text.isEmpty()) {
+    return;
+  }
+  QClipboard *cb = QGuiApplication::clipboard();
+  if (cb) {
+    cb->setText(text);
+  }
+}
+
+void ApplicationRuntime::sendChatMessage(const QString &text) {
+  const QString trimmed = text.trimmed();
+  if (trimmed.isEmpty()) {
+    return;
+  }
+  if (!ensureSteamReady(QStringLiteral("send a message"))) {
+    return;
+  }
+  if (!roomManager_ || !roomManager_->getCurrentLobby().IsValid()) {
+    qWarning() << "Join a room before sending messages.";
+    return;
+  }
+  const std::string payload = trimmed.toUtf8().toStdString();
+  if (!roomManager_->sendChatMessage(payload)) {
+    qWarning() << "Failed to send the message.";
+  }
+}
+
+void ApplicationRuntime::pinChatMessage(int row) {
+  if (!ensureSteamReady(QStringLiteral("pin a message"))) {
+    return;
+  }
+  if (!roomManager_ || roomManager_->getCurrentLobby() == k_steamIDNil) {
+    qWarning() << "Join a room before pinning messages.";
+    return;
+  }
+  if (!isHost()) {
+    setStatusOverride(tr("只有房主可以置顶消息。"), 2400);
+    return;
+  }
+
+  auto selected = chatModel_.entryAt(row);
+  if (!selected) {
+    return;
+  }
+  ChatModel::Entry entry = std::move(*selected);
+  entry.displayName = entry.displayName.isEmpty() ? entry.steamId : entry.displayName;
+  entry.message = entry.message.trimmed();
+  if (!entry.timestamp.isValid()) {
+    entry.timestamp = QDateTime::currentDateTime();
+  }
+  if (entry.message.isEmpty()) {
+    return;
+  }
+
+  bool isSelfAuthor = false;
+  if (steamReady_ && SteamUser()) {
+    const QString myId = QString::number(SteamUser()->GetSteamID().ConvertToUint64());
+    isSelfAuthor = (entry.steamId == myId);
+  }
+  entry = populatePinnedEntryAvatar(std::move(entry), isSelfAuthor);
+  chatModel_.setPinnedMessage(entry);
+
+  if (roomManager_) {
+    const QString payload = serializePinnedMessage(entry);
+    roomManager_->setPinnedMessageData(payload.toStdString());
+  }
+}
+
+void ApplicationRuntime::clearPinnedChatMessage() {
+  if (!roomManager_ || roomManager_->getCurrentLobby() == k_steamIDNil) {
+    chatModel_.clearPinnedMessage();
+    return;
+  }
+  if (!isHost()) {
+    setStatusOverride(tr("只有房主可以取消置顶。"), 2400);
+    return;
+  }
+  chatModel_.clearPinnedMessage();
+  roomManager_->clearPinnedMessageData();
+}
+
+void ApplicationRuntime::launchSteam(bool useSteamChina) {
+#ifdef Q_OS_WIN
+  QString steamPath;
+  {
+    QSettings steamReg("HKEY_CURRENT_USER\\Software\\Valve\\Steam", QSettings::NativeFormat);
+    const QString regPath = steamReg.value(QStringLiteral("SteamPath")).toString();
+    if (!regPath.isEmpty()) {
+      const QString candidate = QDir(regPath).filePath(QStringLiteral("steam.exe"));
+      if (QFileInfo::exists(candidate)) {
+        steamPath = candidate;
+      }
+    }
+  }
+
+  const auto tryProgramDir = [&](const QString &base) {
+    if (!steamPath.isEmpty() || base.isEmpty()) {
+      return;
+    }
+    const QString candidate = QDir(base).filePath(QStringLiteral("Steam/steam.exe"));
+    if (QFileInfo::exists(candidate)) {
+      steamPath = candidate;
+    }
+  };
+
+  tryProgramDir(qEnvironmentVariable("ProgramFiles(x86)"));
+  tryProgramDir(qEnvironmentVariable("ProgramFiles"));
+
+  if (steamPath.isEmpty()) {
+    setStatusOverride(tr("未找到 Steam 安装路径。"), 3000);
+    return;
+  }
+
+  QStringList args;
+  if (useSteamChina) {
+    args << QStringLiteral("-steamchina");
+  }
+  const bool started = QProcess::startDetached(steamPath, args);
+  if (!started) {
+    setStatusOverride(tr("无法启动 Steam。"), 3000);
+    return;
+  }
+
+  setStatusOverride(useSteamChina ? tr("尝试以蒸汽平台启动 Steam…") : tr("尝试以国际版启动 Steam…"),
+                    3000);
+#else
+  Q_UNUSED(useSteamChina);
+  qWarning() << "Steam launch switch is only supported on Windows.";
+#endif
+}
+
+void ApplicationRuntime::handleChatMessage(uint64_t senderId, const QString &message) {
+  const QString trimmed = message.trimmed();
+  if (trimmed.isEmpty()) {
+    return;
+  }
+  ChatModel::Entry entry;
+  entry.steamId = QString::number(senderId);
+  entry.message = trimmed;
+  entry.timestamp = QDateTime::currentDateTime();
+
+  const CSteamID senderSteam(static_cast<uint64>(senderId));
+  if (senderSteam.IsValid() && SteamFriends()) {
+    const char *name = SteamFriends()->GetFriendPersonaName(senderSteam);
+    if (name && name[0] != '\0') {
+      entry.displayName = QString::fromUtf8(name);
+    }
+  }
+  if (entry.displayName.isEmpty()) {
+    entry.displayName = entry.steamId;
+  }
+  entry.avatar = avatarForSteamId(senderSteam);
+
+  if (steamReady_ && SteamUser()) {
+    const CSteamID myId = SteamUser()->GetSteamID();
+    entry.isSelf = myId.IsValid() && senderSteam == myId;
+  }
+
+  if (!entry.isSelf && chatReminderEnabled_) {
+    if (!soundNotifier_.isInitialized() && mainWindow_) {
+      soundNotifier_.initialize(mainWindow_);
+    }
+    soundNotifier_.playMessageAlert();
+    requestUserAttention();
+  }
+
+  chatModel_.appendMessage(std::move(entry));
+}
+
+void ApplicationRuntime::handlePinnedMessageMetadata(const QString &payload) {
+  if (payload.isEmpty()) {
+    chatModel_.clearPinnedMessage();
+    return;
+  }
+  const auto parsed = parsePinnedMessagePayload(payload);
+  if (!parsed.has_value()) {
+    chatModel_.clearPinnedMessage();
+    return;
+  }
+  bool isSelfAuthor = false;
+  if (steamReady_ && SteamUser()) {
+    const QString myId = QString::number(SteamUser()->GetSteamID().ConvertToUint64());
+    isSelfAuthor = (parsed->steamId == myId);
+  }
+  ChatModel::Entry entry = populatePinnedEntryAvatar(std::move(*parsed), isSelfAuthor);
+  chatModel_.setPinnedMessage(entry);
+}
+
+std::optional<ChatModel::Entry> ApplicationRuntime::parsePinnedMessagePayload(const QString &payload) const {
+  QJsonParseError error{};
+  const QJsonDocument doc = QJsonDocument::fromJson(payload.toUtf8(), &error);
+  if (error.error != QJsonParseError::NoError || !doc.isObject()) {
+    return std::nullopt;
+  }
+
+  const QJsonObject obj = doc.object();
+  ChatModel::Entry entry;
+  entry.steamId = obj.value(QStringLiteral("steamId")).toString();
+  entry.displayName = obj.value(QStringLiteral("displayName")).toString();
+  entry.message = obj.value(QStringLiteral("message")).toString().trimmed();
+  const QString ts = obj.value(QStringLiteral("timestamp")).toString();
+  if (!ts.isEmpty()) {
+    entry.timestamp = QDateTime::fromString(ts, Qt::ISODateWithMs);
+    if (!entry.timestamp.isValid()) {
+      entry.timestamp = QDateTime::fromString(ts, Qt::ISODate);
+    }
+    if (entry.timestamp.isValid()) {
+      entry.timestamp = entry.timestamp.toLocalTime();
+    }
+  }
+  if (!entry.timestamp.isValid()) {
+    entry.timestamp = QDateTime::currentDateTime();
+  }
+  if (entry.displayName.isEmpty() && !entry.steamId.isEmpty()) {
+    entry.displayName = entry.steamId;
+  }
+  if (entry.message.isEmpty()) {
+    return std::nullopt;
+  }
+  return entry;
+}
+
+QString ApplicationRuntime::serializePinnedMessage(const ChatModel::Entry &entry) const {
+  QJsonObject obj;
+  obj.insert(QStringLiteral("steamId"), entry.steamId);
+  obj.insert(QStringLiteral("displayName"), entry.displayName);
+  obj.insert(QStringLiteral("message"), entry.message);
+  const QDateTime ts =
+      entry.timestamp.isValid() ? entry.timestamp.toUTC() : QDateTime::currentDateTimeUtc();
+  obj.insert(QStringLiteral("timestamp"), ts.toString(Qt::ISODateWithMs));
+  const QJsonDocument doc(obj);
+  return QString::fromUtf8(doc.toJson(QJsonDocument::Compact));
+}
+
+ChatModel::Entry ApplicationRuntime::populatePinnedEntryAvatar(ChatModel::Entry entry, bool isSelfAuthor) {
+  entry.isSelf = isSelfAuthor;
+  bool ok = false;
+  const uint64_t id = entry.steamId.toULongLong(&ok);
+  if (ok) {
+    const CSteamID steamId(static_cast<uint64>(id));
+    if (steamId.IsValid()) {
+      if (entry.displayName.isEmpty() && SteamFriends()) {
+        const char *name = SteamFriends()->GetFriendPersonaName(steamId);
+        if (name && name[0] != '\0') {
+          entry.displayName = QString::fromUtf8(name);
+        }
+      }
+      if (entry.avatar.isEmpty()) {
+        entry.avatar = avatarForSteamId(steamId);
+      }
+    }
+  }
+  return entry;
+}
+
+void ApplicationRuntime::tick() {
+  if (!steamReady_) {
+    if (relayPingMs_ != -1) {
+      relayPingMs_ = -1;
+      emit relayPingChanged();
+    }
+    if (!relayPops_.isEmpty()) {
+      relayPops_.clear();
+      emit relayPopsChanged();
+    }
+    return;
+  }
+
+  refreshSelfSteamId();
+
+  SteamAPI_RunCallbacks();
+  if (steamManager_) {
+    steamManager_->update();
+  }
+
+  updateLobbyLatencyReadiness();
+
+  const auto now = std::chrono::steady_clock::now();
+  if (lastRelayPingSample_.time_since_epoch().count() == 0 ||
+      now - lastRelayPingSample_ > std::chrono::seconds(2)) {
+    updateRelayPing();
+    lastRelayPingSample_ = now;
+  }
+
+  if (inTunMode()) {
+    ensureVpnRunning();
+    syncVpnPeers();
+    updateVpnInfo();
+  }
+
+  refreshHostId();
+  updateMembersList();
+  updateStatus();
+  updateLobbyInfoSignals();
+}
+
+void ApplicationRuntime::updateStatus() {
+  if (inTunMode()) {
+    updateVpnInfo();
+  }
+  if (!statusOverride_.isEmpty()) {
+    return;
+  }
+  QString next;
+  if (!steamReady_) {
+    next = tr("Steam 未就绪。");
+  } else if (inTunMode()) {
+    const bool active = vpnBridge_ && vpnBridge_->isRunning();
+    if (active != vpnConnected_) {
+      vpnConnected_ = active;
+    }
+    QString ipText = tunLocalIp_;
+    if (ipText.isEmpty() && active) {
+      ipText = tr("IP 协商中…");
+    }
+    if (vpnHosting_) {
+      next = tr("TUN 模式主持中");
+    } else if (active) {
+      next = tr("TUN 模式已连接");
+    } else {
+      next = tr("TUN 模式空闲，等待创建或加入房间。");
+    }
+    if (!ipText.isEmpty()) {
+      next += tr(" · 本地 %1").arg(ipText);
+    }
+  } else if (isHost()) {
+    const QString id = lobbyId();
+    next = id.isEmpty() ? tr("主持房间中…") : tr("作为房主正在主持房间");
+  } else if (isConnected()) {
+    const QString id = lobbyId();
+    next = id.isEmpty() ? tr("已连接到房间") : tr("已连接到房主 %1").arg(id);
+  } else {
+    next = tr("空闲，等待创建或加入房间。");
+  }
+
+  const int clientCount = tcpClients();
+  // if (server_) {
+  //   next += tr(" · 本地 TCP 客户端 %1").arg(clientCount);
+  // }
+
+  if (clientCount != lastTcpClients_) {
+    lastTcpClients_ = clientCount;
+    emit serverChanged();
+  }
+
+  if (next != status_) {
+    status_ = next;
+    emit stateChanged();
+  }
+}
+
+void ApplicationRuntime::setStatusOverride(const QString &text, int durationMs) {
+  statusOverride_ = text;
+  status_ = text;
+  emit stateChanged();
+  if (durationMs > 0) {
+    statusOverrideTimer_.start(durationMs);
+  } else {
+    statusOverrideTimer_.stop();
+  }
+}
+
+void ApplicationRuntime::clearStatusOverride() {
+  if (statusOverride_.isEmpty()) {
+    return;
+  }
+  statusOverride_.clear();
+  updateStatus();
+}
+
+void ApplicationRuntime::updateLobbiesList(const std::vector<SteamRoomManager::LobbyInfo> &lobbies) {
+  std::vector<LobbiesModel::Entry> entries;
+  entries.reserve(lobbies.size());
+
+  const QString currentLobbyId = lobbyId();
+  const bool iAmHost = isHost();
+  const QString myIdString = (steamReady_ && SteamUser())
+                                 ? QString::number(SteamUser()->GetSteamID().ConvertToUint64())
+                                 : QString();
+  const int currentMemberCount =
+      roomManager_ ? static_cast<int>(roomManager_->getLobbyMembers().size()) : 0;
+
+  for (const auto &lobby : lobbies) {
+    LobbiesModel::Entry entry;
+    entry.lobbyId = QString::number(lobby.id.ConvertToUint64());
+    entry.name = QString::fromStdString(lobby.name);
+    if (entry.name.trimmed().isEmpty()) {
+      QString hostDisplay = QString::fromStdString(lobby.ownerName);
+      if (hostDisplay.isEmpty() && lobby.ownerId.IsValid() && SteamFriends()) {
+        const char *ownerName = SteamFriends()->GetFriendPersonaName(lobby.ownerId);
+        if (ownerName && ownerName[0] != '\0') {
+          hostDisplay = QString::fromUtf8(ownerName);
+        }
+      }
+      if (!hostDisplay.isEmpty()) {
+        entry.name = tr("%1 的房间").arg(hostDisplay);
+      } else {
+        entry.name = tr("未命名房间");
+      }
+    }
+    if (lobby.ownerId.IsValid()) {
+      entry.hostId = QString::number(lobby.ownerId.ConvertToUint64());
+    }
+    entry.hostName = QString::fromStdString(lobby.ownerName);
+    if (entry.hostName.isEmpty() && lobby.ownerId.IsValid() && SteamFriends()) {
+      const char *ownerName = SteamFriends()->GetFriendPersonaName(lobby.ownerId);
+      if (ownerName) {
+        entry.hostName = QString::fromUtf8(ownerName);
+      }
+    }
+    entry.memberCount = lobby.memberCount;
+    entry.ping = lobby.pingMs >= 0 ? lobby.pingMs : -1;
+
+    if (!currentLobbyId.isEmpty() && entry.lobbyId == currentLobbyId && currentMemberCount > 0) {
+      entry.memberCount = std::max(entry.memberCount, currentMemberCount);
+    }
+
+    if (!iAmHost && !myIdString.isEmpty() && entry.hostId == myIdString) {
+      continue; // when acting as client, hide previously hosted lobby
+    }
+
+    entries.push_back(std::move(entry));
+  }
+
+  lobbiesModel_.setLobbies(std::move(entries));
+}
+
+QString ApplicationRuntime::avatarForSteamId(const CSteamID &memberId) {
+  if (!memberId.IsValid()) {
+    return {};
+  }
+  const uint64_t key = memberId.ConvertToUint64();
+  const auto cached = memberAvatars_.find(key);
+  if (cached != memberAvatars_.end()) {
+    return cached->second;
+  }
+
+  const std::string avatarData = SteamUtils::getAvatarDataUrl(memberId);
+  if (avatarData.empty()) {
+    return {};
+  }
+  QString avatar = QString::fromStdString(avatarData);
+  memberAvatars_.emplace(key, avatar);
+  return avatar;
+}
+
+void ApplicationRuntime::updateMembersList() {
+  if (!steamReady_) {
+    membersModel_.setMembers({});
+    memberAvatars_.clear();
+    lobbiesModel_.setMemberCount({}, 0);
+    return;
+  }
+
+  if (inTunMode()) {
+    std::vector<CSteamID> lobbyMembers;
+    if (roomManager_) {
+      CSteamID currentLobby = roomManager_->getCurrentLobby();
+      if (currentLobby.IsValid()) {
+        lobbyMembers = roomManager_->getLobbyMembers();
+      }
+    }
+
+    std::unordered_map<uint64_t, uint32_t> ipBySteam;
+    if (vpnBridge_) {
+      const auto routes = vpnBridge_->getRoutingTable();
+      for (const auto &kv : routes) {
+        const uint64_t sid = kv.second.peerId.value();
+        ipBySteam[sid] = kv.second.ipAddress;
+      }
+    }
+
+    std::vector<MembersModel::Entry> entries;
+    entries.reserve(lobbyMembers.size());
+    CSteamID myId = SteamUser()->GetSteamID();
+    std::unordered_set<uint64_t> seen;
+    seen.reserve(lobbyMembers.size());
+
+    for (const auto &memberId : lobbyMembers) {
+      const uint64 memberValue = memberId.ConvertToUint64();
+      seen.insert(memberValue);
+
+      MembersModel::Entry entry;
+      entry.isSelf = (SteamUser() && memberId == myId);
+      entry.isFriend =
+          (SteamFriends() && SteamFriends()->HasFriend(memberId, k_EFriendFlagImmediate)) ||
+          entry.isSelf;
+      entry.steamId = QString::number(memberValue);
+      entry.displayName = QString::fromUtf8(SteamFriends()->GetFriendPersonaName(memberId));
+      entry.avatar = avatarForSteamId(memberId);
+      entry.ping = -1;
+      entry.relay = QStringLiteral("-");
+
+      if (memberId == myId) {
+        entry.ping = 0;
+        entry.relay = vpnHosting_ ? tr("房主") : tr("本机");
+      } else if (vpnManager_) {
+        entry.ping = vpnManager_->getPeerPing(memberId);
+        entry.relay = QString::fromStdString(vpnManager_->getPeerConnectionType(memberId));
+      }
+      auto itIp = ipBySteam.find(memberValue);
+      if (itIp != ipBySteam.end()) {
+        entry.ip = QString::fromStdString(SteamVpnBridge::ipToString(itIp->second));
+      }
+      entries.push_back(std::move(entry));
+    }
+
+    const int newCount = static_cast<int>(entries.size());
+    if (newCount != lastMemberLogCount_) {
+      lastMemberLogCount_ = newCount;
+      qDebug() << "[Members] updated count:" << newCount;
+      for (const auto &entry : entries) {
+        qDebug() << "   member" << entry.displayName << "(" << entry.steamId << ")";
+      }
+    }
+    membersModel_.setMembers(std::move(entries));
+    const QString currentLobbyId = lobbyId();
+    if (!currentLobbyId.isEmpty() && newCount > 0) {
+      lobbiesModel_.setMemberCount(currentLobbyId, newCount);
+    }
+    return;
+  }
+
+  if (!steamManager_) {
+    membersModel_.setMembers({});
+    return;
+  }
+
+  std::vector<CSteamID> lobbyMembers;
+  if (roomManager_) {
+    CSteamID currentLobby = roomManager_->getCurrentLobby();
+    if (currentLobby.IsValid()) {
+      lobbyMembers = roomManager_->getLobbyMembers();
+    }
+  }
+
+  std::vector<MembersModel::Entry> entries;
+  entries.reserve(lobbyMembers.size());
+  std::vector<std::tuple<uint64_t, int, std::string>> pingBroadcast;
+
+  CSteamID myId = SteamUser()->GetSteamID();
+  CSteamID hostId = steamManager_->getHostSteamID();
+
+  std::unordered_set<uint64_t> seen;
+  seen.reserve(lobbyMembers.size());
+
+  const auto isMemberHost = [&](const CSteamID &member) -> bool {
+    return hostId.IsValid() && member == hostId;
+  };
+
+  for (const auto &memberId : lobbyMembers) {
+    const uint64 memberValue = memberId.ConvertToUint64();
+    seen.insert(memberValue);
+
+    MembersModel::Entry entry;
+    entry.isFriend =
+        (SteamFriends() && SteamFriends()->HasFriend(memberId, k_EFriendFlagImmediate)) ||
+        (SteamUser() && memberId == myId);
+    entry.isSelf = (SteamUser() && memberId == myId);
+    entry.steamId = QString::number(memberValue);
+    entry.displayName = QString::fromUtf8(SteamFriends()->GetFriendPersonaName(memberId));
+    entry.avatar = avatarForSteamId(memberId);
+    entry.relay = QStringLiteral("-");
+    entry.ping = -1;
+    const bool memberIsHost = isMemberHost(memberId);
+
+    if (memberId == myId) {
+      entry.ping = 0;
+      entry.relay = isHost() ? tr("房主") : tr("本机");
+    } else {
+      if (memberIsHost) {
+        entry.relay = tr("房主");
+        int rp = -1;
+        std::string relayInfo;
+        const bool hasBroadcast =
+            roomManager_ && roomManager_->getRemotePing(myId, rp, relayInfo) && rp >= 0;
+        if (hasBroadcast && rp > 1) {
+          entry.ping = rp;
+          if (!relayInfo.empty()) {
+            entry.relay = QString::fromStdString(relayInfo);
+          }
+        } else {
+          const int fallbackPing = steamManager_ ? steamManager_->getHostPing() : -1;
+          entry.ping = fallbackPing > 1 ? fallbackPing : -1;
+        }
+        if (entry.ping >= 0 && entry.ping < 2) {
+          entry.ping = -1;
+        }
+      } else if (!isHost()) {
+        int rp = -1;
+        std::string relayInfo;
+        if (roomManager_ && roomManager_->getRemotePing(memberId, rp, relayInfo) && rp >= 0) {
+          entry.ping = rp;
+          entry.relay = QString::fromStdString(relayInfo);
+        }
+      } else if (isHost()) {
+        std::lock_guard<std::mutex> lock(steamManager_->getConnectionsMutex());
+        for (const auto &conn : steamManager_->getConnections()) {
+          SteamNetConnectionRealTimeStatus_t status{};
+          if (steamManager_->getInterface()->GetConnectionRealTimeStatus(conn, &status, 0,
+                                                                         nullptr) != k_EResultOK ||
+              status.m_eState != k_ESteamNetworkingConnectionState_Connected) {
+            continue; // Transport not ready; skip to avoid ICE asserts.
+          }
+
+          SteamNetConnectionInfo_t info;
+          if (steamManager_->getInterface()->GetConnectionInfo(conn, &info) &&
+              info.m_identityRemote.GetSteamID() == memberId) {
+            entry.ping = steamManager_->getConnectionPing(conn);
+            entry.relay = QString::fromStdString(steamManager_->getConnectionRelayInfo(conn));
+            if (entry.ping >= 0) {
+              pingBroadcast.emplace_back(memberValue, entry.ping, entry.relay.toStdString());
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    entries.push_back(std::move(entry));
+  }
+
+  if (isHost()) {
+    std::lock_guard<std::mutex> lock(steamManager_->getConnectionsMutex());
+    for (const auto &conn : steamManager_->getConnections()) {
+      SteamNetConnectionRealTimeStatus_t status{};
+      if (steamManager_->getInterface()->GetConnectionRealTimeStatus(conn, &status, 0, nullptr) !=
+              k_EResultOK ||
+          status.m_eState != k_ESteamNetworkingConnectionState_Connected) {
+        continue; // Still negotiating; skip to avoid noisy asserts.
+      }
+
+      SteamNetConnectionInfo_t info;
+      if (!steamManager_->getInterface()->GetConnectionInfo(conn, &info)) {
+        continue;
+      }
+      CSteamID remoteId = info.m_identityRemote.GetSteamID();
+      if (!remoteId.IsValid()) {
+        continue;
+      }
+      const uint64_t remoteValue = remoteId.ConvertToUint64();
+      if (!seen.insert(remoteValue).second) {
+        continue;
+      }
+
+      MembersModel::Entry entry;
+      entry.isFriend =
+          (SteamFriends() && SteamFriends()->HasFriend(remoteId, k_EFriendFlagImmediate)) ||
+          (SteamUser() && remoteId == myId);
+      entry.isSelf = (SteamUser() && remoteId == myId);
+      entry.steamId = QString::number(remoteValue);
+      entry.displayName = QString::fromUtf8(SteamFriends()->GetFriendPersonaName(remoteId));
+      entry.avatar = avatarForSteamId(remoteId);
+      entry.ping = steamManager_->getConnectionPing(conn);
+      const std::string relayInfo = steamManager_->getConnectionRelayInfo(conn);
+      entry.relay = relayInfo.empty() ? tr("P2P") : QString::fromStdString(relayInfo);
+      if (entry.ping >= 0) {
+        pingBroadcast.emplace_back(remoteValue, entry.ping, relayInfo);
+      }
+
+      entries.push_back(std::move(entry));
+    }
+  }
+
+  if (isHost() && roomManager_) {
+    const auto now = std::chrono::steady_clock::now();
+    if (lastPingBroadcast_.time_since_epoch().count() == 0 ||
+        now - lastPingBroadcast_ > std::chrono::seconds(2)) {
+      roomManager_->broadcastPings(pingBroadcast);
+      lastPingBroadcast_ = now;
+    }
+  }
+
+  const int newCount = static_cast<int>(entries.size());
+  if (newCount != lastMemberLogCount_) {
+    lastMemberLogCount_ = newCount;
+    qDebug() << "[Members] updated count:" << newCount;
+    for (const auto &entry : entries) {
+      qDebug() << "   member" << entry.displayName << "(" << entry.steamId << ")";
+    }
+  }
+
+  membersModel_.setMembers(std::move(entries));
+  const QString currentLobbyId = lobbyId();
+  if (!currentLobbyId.isEmpty() && newCount > 0) {
+    lobbiesModel_.setMemberCount(currentLobbyId, newCount);
+  }
+}
+
+void ApplicationRuntime::refreshHostId() {
+  QString next;
+  if (inTunMode()) {
+    if (roomManager_) {
+      CSteamID lobby = roomManager_->getCurrentLobby();
+      if (lobby.IsValid()) {
+        CSteamID owner = SteamMatchmaking()->GetLobbyOwner(lobby);
+        if (owner.IsValid()) {
+          next = QString::number(owner.ConvertToUint64());
+        }
+      }
+    }
+    if (next.isEmpty() && !hostSteamId_.isEmpty()) {
+      next = hostSteamId_;
+    }
+  } else if (steamManager_) {
+    CSteamID host = steamManager_->getHostSteamID();
+    if (host.IsValid()) {
+      next = QString::number(host.ConvertToUint64());
+    }
+  }
+  if (next != hostSteamId_) {
+    hostSteamId_ = next;
+    emit hostSteamIdChanged();
+  }
+}
+
+void ApplicationRuntime::updateLobbyInfoSignals() {
+  const QString id = lobbyId();
+  const QString name = lobbyName();
+  const bool lobbyChanged = id != lastLobbyId_;
+  if (lobbyChanged) {
+    chatModel_.clear();
+  }
+  if (lobbyChanged || name != lastLobbyName_) {
+    lastLobbyId_ = id;
+    lastLobbyName_ = name;
+    emit stateChanged();
+  }
+}
+
+void ApplicationRuntime::checkForUpdates(bool useProxy) { updateController_.check(useProxy); }
+
+void ApplicationRuntime::downloadUpdate(bool useProxy, const QString &targetPath) {
+  updateController_.download(useProxy, targetPath);
+}

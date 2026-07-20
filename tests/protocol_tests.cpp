@@ -1,9 +1,12 @@
 #include "domain/strong_id.h"
-#include "lobbies_model.h"
-#include "net/multiplex_protocol.h"
-#include "net/wire_codec.h"
-#include "update_controller.h"
+#include "ConnectTool/models/lobbies_model.h"
+#include "network/protocol/multiplex_protocol.h"
+#include "network/protocol/wire_codec.h"
+#include "network/vpn/node_identity.h"
+#include "network/vpn/vpn_protocol.h"
+#include "application/services/update_controller.h"
 
+#include <QCryptographicHash>
 #include <QTest>
 
 #include <array>
@@ -26,17 +29,18 @@ private slots:
   void typedPayloadRoundTripsWithoutAlignmentAssumptions();
   void multiplexDataFrameMatchesLegacyBytes();
   void multiplexRejectsMalformedFrames();
+  void nodeIdentityMatchesLegacyQtHash();
   void lobbiesSortReachablePeersByPing();
   void lobbyFilterKeepsCountInSync();
   void versionsAreComparedSemantically();
 };
 
 void ProtocolTests::strongIdsAreNotInterchangeable() {
-  static_assert(!std::is_convertible_v<domain::SteamId, domain::LobbyId>);
-  static_assert(!std::is_convertible_v<std::uint64_t, domain::SteamId>);
+  static_assert(!std::is_convertible_v<domain::PeerId, domain::LobbyId>);
+  static_assert(!std::is_convertible_v<std::uint64_t, domain::PeerId>);
 
-  const domain::SteamId empty;
-  const domain::SteamId valid{480};
+  const domain::PeerId empty;
+  const domain::PeerId valid{480};
   QVERIFY(!empty.valid());
   QVERIFY(valid.valid());
   QCOMPARE(valid.value(), std::uint64_t{480});
@@ -118,6 +122,17 @@ void ProtocolTests::multiplexRejectsMalformedFrames() {
   const auto terminatorResult = multiplex::decodeFrame(missingTerminator);
   QVERIFY(!terminatorResult.has_value());
   QCOMPARE(terminatorResult.error(), multiplex::CodecError::MissingIdTerminator);
+}
+
+void ProtocolTests::nodeIdentityMatchesLegacyQtHash() {
+  const std::uint64_t peerValue = 76561198000000000ULL;
+  QByteArray input(reinterpret_cast<const char *>(&peerValue), sizeof(peerValue));
+  input.append(APP_SECRET_SALT);
+  const QByteArray legacyHash = QCryptographicHash::hash(input, QCryptographicHash::Sha256);
+
+  const auto nodeId = NodeIdentity::generate(domain::PeerId{peerValue});
+  QCOMPARE(QByteArray(reinterpret_cast<const char *>(nodeId.data()), nodeId.size()),
+           legacyHash.first(NODE_ID_SIZE));
 }
 
 void ProtocolTests::lobbiesSortReachablePeersByPing() {

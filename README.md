@@ -29,6 +29,11 @@ connecttool-qt 是一款基于 connecttool
 代码分层、兼容性约束与验证方式见 [架构说明](docs/ARCHITECTURE.md)，性能测量方法与
 本次基线见 [性能说明](docs/PERFORMANCE.md)。
 
+项目现在按技术边界拆分：`modules/ConnectTool` 是带独立 C++ backing target 和
+插件的 QML 模块；`src/network` 是不依赖 Steamworks/Qt 的网络核心；Steam SDK
+适配只存在于 `src/integrations/steam`；系统相关实现统一放在 `src/platform`；
+外部依赖声明和 vendored 源码集中在 `deps`。
+
 ## 开发与测试
 
 仅构建不依赖 Steamworks 的核心协议和测试：
@@ -42,7 +47,7 @@ ctest --preset core-tests
 
 完整应用需要将 Steamworks SDK 放在 `steamworks/`、`sdk/`，或设置
 `STEAMWORKS_PATH_HINT`。随后使用 `dev`/`release` 预设构建。`dev` 构建会注册
-协议单元测试与离屏 QML 烟雾测试；`all_qmllint` 可检查全部 QML 绑定。
+协议单元测试与离屏 QML 烟雾测试；`connecttool_ui_qmllint` 可检查应用 QML 绑定。
 非 Nix 环境首次配置还需要 Git LFS，以获取 QmlMaterial 内置的 Material Symbols
 字体；Nix 构建会按固定提交和哈希预取该依赖。
 

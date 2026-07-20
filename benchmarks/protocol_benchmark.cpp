@@ -1,5 +1,5 @@
-#include "net/multiplex_protocol.h"
-#include "net/wire_codec.h"
+#include "network/protocol/multiplex_protocol.h"
+#include "network/protocol/wire_codec.h"
 
 #include <array>
 #include <chrono>

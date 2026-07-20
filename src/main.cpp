@@ -1,10 +1,10 @@
-#include "application_controller.h"
-#include "application_diagnostics.h"
-#include "backend.h"
+#include "ConnectTool/controllers/application_controller.h"
+#include "application/runtime/application_diagnostics.h"
+#include "application/runtime/application_runtime.h"
 #if defined(Q_OS_WIN)
-#include "windows_accessibility_guard.h"
-#include "windows_crash_handler.h"
-#include "windows_renderer_supervisor.h"
+#include "platform/windows/windows_accessibility_guard.h"
+#include "platform/windows/windows_crash_handler.h"
+#include "platform/windows/windows_renderer_supervisor.h"
 #endif
 
 #include <QCoreApplication>
@@ -28,6 +28,7 @@
 #include <string_view>
 
 Q_IMPORT_QML_PLUGIN(Qcm_MaterialPlugin)
+Q_IMPORT_QML_PLUGIN(ConnectToolPlugin)
 
 namespace {
 [[nodiscard]] bool configureGraphicsBackend(std::span<char *> arguments) {
@@ -142,8 +143,8 @@ int main(int argc, char *argv[]) {
 
   app.setWindowIcon(QIcon(QStringLiteral(":/qt/qml/ConnectTool/AppIcon.png")));
   qInfo() << "[Startup] Constructing application services.";
-  Backend backend;
-  ApplicationController application(backend);
+  ApplicationRuntime runtime;
+  ApplicationController application(runtime);
   ApplicationControllerRegistration::bind(application);
   qInfo() << "[Startup] Application services constructed.";
 
@@ -179,15 +180,15 @@ int main(int argc, char *argv[]) {
       window->raise();
       window->requestActivate();
 #endif
-      backend.initializeSound(window);
+      runtime.initializeSound(window);
 
       QObject::connect(
-          window, &QQuickWindow::frameSwapped, &backend,
-          [&backend]() {
+          window, &QQuickWindow::frameSwapped, &runtime,
+          [&runtime]() {
 #if defined(Q_OS_WIN)
             connecttool::windows::signalRendererReady();
 #endif
-            backend.startServices();
+            runtime.startServices();
           },
           Qt::SingleShotConnection);
 
