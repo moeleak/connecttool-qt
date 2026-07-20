@@ -230,11 +230,16 @@ endif()
 
 if(WIN32)
     set_target_properties(connecttool-qt PROPERTIES WIN32_EXECUTABLE TRUE)
+    target_compile_definitions(connecttool-qt PRIVATE
+        _WIN32_WINNT=0x0A00
+        WINVER=0x0A00)
     target_sources(connecttool-qt PRIVATE
         src/windows_accessibility_guard.h
         src/windows_accessibility_guard.cpp
         src/windows_renderer_supervisor.h
         src/windows_renderer_supervisor.cpp
+        tun/windows_network_config.h
+        tun/windows_network_config.cpp
         tun/tun_windows.cpp
         src/firewall_windows.cpp
         resources/connecttool.rc)
@@ -295,7 +300,12 @@ target_link_libraries(connecttool-qt PRIVATE
     ${STEAMWORKS_LIBRARY})
 
 if(WIN32)
-    target_link_libraries(connecttool-qt PRIVATE iphlpapi ws2_32 dsound)
+    target_link_libraries(connecttool-qt PRIVATE
+        iphlpapi
+        ws2_32
+        dsound
+        ole32
+        oleaut32)
 elseif(APPLE)
     find_library(COREAUDIO_LIBRARY CoreAudio)
     find_library(AUDIOUNIT_LIBRARY AudioUnit)

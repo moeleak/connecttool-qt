@@ -34,6 +34,10 @@ QML pages
   room/network state.
 - `src/platform_environment.*` isolates Windows, Linux, and macOS privilege and
   Steam discovery workarounds from application orchestration.
+- Windows TUN configuration is isolated in `tun/windows_network_config.*` and
+  uses IP Helper APIs for addresses, routes, MTU, and interface state. Firewall
+  rules use the Windows Firewall COM API. Joining a room therefore launches no
+  command shell, PowerShell process, `route.exe`, or `netsh.exe`.
 - `qml/ConnectTool/` uses the pinned `Qcm.Material` module for Material Design
   3 tokens, controls, icons, motion, and shaders. `Main.qml` owns only the
   application shell, theme bootstrap, navigation, dialogs, and snackbars.
