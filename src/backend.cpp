@@ -1898,9 +1898,10 @@ void Backend::updateMembersList() {
       seen.insert(memberValue);
 
       MembersModel::Entry entry;
+      entry.isSelf = (SteamUser() && memberId == myId);
       entry.isFriend =
           (SteamFriends() && SteamFriends()->HasFriend(memberId, k_EFriendFlagImmediate)) ||
-          (SteamUser() && memberId == myId);
+          entry.isSelf;
       entry.steamId = QString::number(memberValue);
       entry.displayName = QString::fromUtf8(SteamFriends()->GetFriendPersonaName(memberId));
       entry.avatar = avatarForSteamId(memberId);

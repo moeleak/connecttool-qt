@@ -17,11 +17,20 @@ MD.ItemDelegate {
     required property bool isFriend
     required property bool isSelf
 
-    implicitHeight: 78
+    readonly property color pingColor: root.ping < 0 ? Theme.foregroundMuted
+                                       : (root.ping <= 100 ? Theme.success
+                                          : (root.ping <= 200 ? Theme.warning : Theme.danger))
+    readonly property string connectionLabel: {
+        if (root.relay.length > 0 && root.relay !== "-")
+            return root.relay
+        return root.ping >= 0 ? qsTr("直连") : qsTr("连接中")
+    }
+
+    implicitHeight: 82
     leftPadding: 10
-    rightPadding: 8
-    topPadding: 7
-    bottomPadding: 7
+    rightPadding: 7
+    topPadding: 8
+    bottomPadding: 8
     hoverEnabled: true
 
     background: Rectangle {
@@ -35,9 +44,12 @@ MD.ItemDelegate {
     }
 
     contentItem: RowLayout {
-        spacing: 9
+        spacing: 10
 
         Avatar {
+            Layout.preferredWidth: 44
+            Layout.preferredHeight: 44
+            Layout.alignment: Qt.AlignVCenter
             source: root.avatar
             name: root.displayName
             online: true
@@ -47,24 +59,14 @@ MD.ItemDelegate {
             Layout.fillWidth: true
             spacing: 0
 
-            RowLayout {
+            MD.Label {
                 Layout.fillWidth: true
-                spacing: 5
-
-                MD.Label {
-                    Layout.fillWidth: true
-                    text: root.displayName
-                    color: Theme.foreground
-                    typescale: MD.Token.typescale.title_small
-                    prominent: true
-                    elide: Text.ElideRight
-                }
-
-                StatusPill {
-                    text: root.isSelf ? qsTr("自己")
-                          : (root.isFriend ? qsTr("好友") : qsTr("成员"))
-                    accent: root.isSelf ? Theme.secondary : Theme.primary
-                }
+                text: root.displayName
+                color: Theme.foreground
+                typescale: MD.Token.typescale.title_small
+                prominent: true
+                wrapMode: Text.NoWrap
+                elide: Text.ElideRight
             }
 
             MD.Label {
@@ -85,23 +87,54 @@ MD.ItemDelegate {
             }
         }
 
-        ColumnLayout {
-            Layout.preferredWidth: 54
-            spacing: 0
+        Item {
+            id: identitySlot
 
-            MD.Label {
+            Layout.minimumWidth: 64
+            Layout.preferredWidth: 64
+            Layout.maximumWidth: 64
+            Layout.preferredHeight: identityBadge.implicitHeight
+            Layout.alignment: Qt.AlignVCenter
+
+            StatusPill {
+                id: identityBadge
+
+                anchors.centerIn: identitySlot
+                visible: root.isSelf || root.isFriend
+                text: root.isSelf ? qsTr("自己") : qsTr("好友")
+                accent: root.isSelf ? Theme.secondary : Theme.primary
+            }
+        }
+
+        ColumnLayout {
+            Layout.minimumWidth: 70
+            Layout.preferredWidth: 70
+            Layout.maximumWidth: 70
+            Layout.alignment: Qt.AlignVCenter
+            spacing: 1
+
+            RowLayout {
                 Layout.alignment: Qt.AlignRight
-                text: root.ping >= 0 ? qsTr("%1 ms").arg(root.ping) : "–"
-                color: root.ping < 0 ? Theme.foregroundMuted
-                      : (root.ping <= 100 ? Theme.success
-                         : (root.ping <= 200 ? Theme.warning : Theme.danger))
-                typescale: MD.Token.typescale.label_medium
-                prominent: true
+                spacing: 4
+
+                MD.Icon {
+                    name: MD.Token.icon.network_ping
+                    size: 15
+                    color: root.pingColor
+                }
+
+                MD.Label {
+                    text: root.ping >= 0 ? qsTr("%1 ms").arg(root.ping) : "—"
+                    color: root.pingColor
+                    typescale: MD.Token.typescale.label_medium
+                    prominent: true
+                }
             }
 
             MD.Label {
                 Layout.alignment: Qt.AlignRight
-                text: root.relay.length > 0 ? root.relay : qsTr("直连")
+                Layout.maximumWidth: 70
+                text: root.connectionLabel
                 color: Theme.foregroundMuted
                 typescale: MD.Token.typescale.label_small
                 elide: Text.ElideRight
@@ -109,6 +142,10 @@ MD.ItemDelegate {
         }
 
         ColumnLayout {
+            Layout.minimumWidth: 36
+            Layout.preferredWidth: 36
+            Layout.maximumWidth: 36
+            Layout.alignment: Qt.AlignVCenter
             spacing: 0
 
             MD.IconButton {

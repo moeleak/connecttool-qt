@@ -3,10 +3,42 @@
 #include <QByteArray>
 #include <QIODevice>
 #include <QImage>
+#include <chrono>
 #include <cstring>
 #include <iostream>
+#include <mutex>
+#include <unordered_map>
 
 namespace {
+using AvatarRequestClock = std::chrono::steady_clock;
+
+constexpr auto kAvatarRequestRetryInterval = std::chrono::seconds(5);
+
+std::mutex avatarRequestMutex;
+std::unordered_map<uint64_t, AvatarRequestClock::time_point> avatarRequests;
+
+void requestAvatarIfNeeded(const CSteamID &id) {
+  const auto key = id.ConvertToUint64();
+  const auto now = AvatarRequestClock::now();
+  {
+    std::lock_guard lock(avatarRequestMutex);
+    const auto request = avatarRequests.find(key);
+    if (request != avatarRequests.end() && now - request->second < kAvatarRequestRetryInterval) {
+      return;
+    }
+    avatarRequests[key] = now;
+  }
+
+  // Passing false is important: true requests only the persona name and leaves
+  // non-friend avatars unavailable.
+  SteamFriends()->RequestUserInformation(id, false);
+}
+
+void finishAvatarRequest(const CSteamID &id) {
+  std::lock_guard lock(avatarRequestMutex);
+  avatarRequests.erase(id.ConvertToUint64());
+}
+
 std::string buildAvatarDataUrl(int imageHandle) {
   if (imageHandle <= 0 || ::SteamUtils() == nullptr) {
     return {};
@@ -51,8 +83,7 @@ std::vector<SteamUtils::FriendInfo> SteamUtils::getFriendsList() {
   for (int i = 0; i < friendCount; ++i) {
     CSteamID friendID = SteamFriends()->GetFriendByIndex(i, k_EFriendFlagAll);
     const char *name = SteamFriends()->GetFriendPersonaName(friendID);
-    std::string avatar =
-        buildAvatarDataUrl(SteamFriends()->GetSmallFriendAvatar(friendID));
+    std::string avatar = getAvatarDataUrl(friendID);
     EPersonaState persona = SteamFriends()->GetFriendPersonaState(friendID);
     const bool isOnline = persona != k_EPersonaStateOffline &&
                           persona != k_EPersonaStateInvisible;
@@ -67,11 +98,14 @@ std::string SteamUtils::getAvatarDataUrl(const CSteamID &id) {
     return {};
   }
 
-  const int handle = SteamFriends()->GetSmallFriendAvatar(id);
+  // The 64 px source stays sharp in the 42 px Material avatar while avoiding
+  // the memory cost of keeping full-size profile images for every room member.
+  const int handle = SteamFriends()->GetMediumFriendAvatar(id);
   if (handle <= 0) {
-    SteamFriends()->RequestUserInformation(id, true);
+    requestAvatarIfNeeded(id);
     return {};
   }
 
+  finishAvatarRequest(id);
   return buildAvatarDataUrl(handle);
 }

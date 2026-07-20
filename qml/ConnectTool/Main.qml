@@ -14,7 +14,7 @@ MD.ApplicationWindow {
     minimumWidth: 980
     minimumHeight: 660
     visible: true
-    title: qsTr("ConnectTool · Steam P2P")
+    title: qsTr("ConnectTool")
     color: Theme.background
 
     MD.MProp.textColor: MD.Token.color.on_surface
