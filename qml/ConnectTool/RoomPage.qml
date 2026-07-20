@@ -2,7 +2,6 @@ pragma ComponentBehavior: Bound
 
 import QtQuick
 import QtQuick.Layouts
-import Qcm.Material as MD
 import ConnectTool
 
 Item {

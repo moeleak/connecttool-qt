@@ -18,7 +18,7 @@ concurrency:
 env:
   BUILD_TYPE: Release
   BOOST_VERSION: "1.84.0"
-  CMAKE_CACHE_SCHEMA: "1"
+  CMAKE_CACHE_SCHEMA: "2"
   QT_VERSION: "6.11.1"
   AQT_SOURCE: "git+https://github.com/miurahr/aqtinstall.git@5be32a75a81513792d95f13065b72cac3381c612"
 jobs:

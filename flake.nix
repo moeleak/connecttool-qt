@@ -57,9 +57,9 @@
             else
               repoRoot + "/sdk";
           qmlMaterialSrc = pkgs.fetchgit {
-            url = "https://github.com/hypengw/QmlMaterial.git";
-            rev = "e8b275ba4e9852fe94394d565604d628e1fef03c";
-            hash = "sha256-z0qEi/sl09J+WpGH8DhZqpwxA3+JneDbJQjEN3GCvfc=";
+            url = "https://github.com/moeleak/QmlMaterial.git";
+            rev = "4ab7fd009071755b607d5393dd1af07b52c80b5c";
+            hash = "sha256-riv4OBmuVzsDstv5fKAH5Ty64ZfqbiDqrn1M8LTxy3Q=";
             fetchLFS = true;
           };
         in

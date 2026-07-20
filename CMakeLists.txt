@@ -77,8 +77,8 @@ set(QM_BUILD_TESTS OFF CACHE BOOL "Build QmlMaterial tests" FORCE)
 set(QML_MATERIAL_BUILD_TYPE STATIC CACHE STRING "QmlMaterial library type" FORCE)
 FetchContent_Declare(
     qml_material
-    GIT_REPOSITORY https://github.com/hypengw/QmlMaterial.git
-    GIT_TAG e8b275ba4e9852fe94394d565604d628e1fef03c
+    GIT_REPOSITORY https://github.com/moeleak/QmlMaterial.git
+    GIT_TAG 4ab7fd009071755b607d5393dd1af07b52c80b5c
     EXCLUDE_FROM_ALL)
 FetchContent_MakeAvailable(qml_material)
 
