@@ -841,6 +841,10 @@ jobs:
     runs-on: ubuntu-latest
     if: github.ref_type == 'tag'
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -862,6 +866,10 @@ jobs:
               cmake -E chdir dist cmake -E tar cf "${name}.zip" --format=zip "$name"
             fi
           done
+      - name: Generate release notes
+        run: scripts/release/generate_release_notes.sh release-notes.md
+        env:
+          GH_TOKEN: ${{ github.token }}
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
@@ -869,7 +877,7 @@ jobs:
           name: ${{ contains(github.ref_name, '-alpha') && 'alpha' || github.ref_name }}
           prerelease: ${{ contains(github.ref_name, '-alpha') }}
           make_latest: ${{ contains(github.ref_name, '-alpha') && 'false' || 'legacy' }}
-          generate_release_notes: true
+          body_path: release-notes.md
           fail_on_unmatched_files: true
           files: |
             dist/**/*.zip
