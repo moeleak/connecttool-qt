@@ -18,17 +18,26 @@ concurrency:
 env:
   BUILD_TYPE: Release
   BOOST_VERSION: "1.84.0"
+  CMAKE_CACHE_SCHEMA: "1"
   QT_VERSION: "6.11.1"
   AQT_SOURCE: "git+https://github.com/miurahr/aqtinstall.git@5be32a75a81513792d95f13065b72cac3381c612"
 jobs:
   build:
     runs-on: windows-latest
     name: Build (Windows)
+    env:
+      SCCACHE_BASEDIRS: ${{ github.workspace }}
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
           submodules: recursive
+      - name: Read runner image version
+        id: runner-image
+        shell: bash
+        run: echo "version=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
@@ -84,10 +93,72 @@ jobs:
           if (-not (Test-Path $lib)) {
             throw "Steamworks redistributable not found at $lib"
           }
+      - name: Set up MSVC environment
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vsInstall = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+            -property installationPath
+          if (-not $vsInstall) {
+            throw 'Unable to locate the Visual C++ toolchain.'
+          }
+          $devCommand = Join-Path $vsInstall 'Common7\Tools\VsDevCmd.bat'
+          $environment = & $env:ComSpec /d /s /c `
+            "`"$devCommand`" -no_logo -arch=x64 -host_arch=x64 && set"
+          if ($LASTEXITCODE -ne 0) {
+            throw "VsDevCmd failed with exit code $LASTEXITCODE"
+          }
+          foreach ($line in $environment) {
+            if ($line -match '^([^=][^=]*)=(.*)$') {
+              [Environment]::SetEnvironmentVariable($matches[1], $matches[2], 'Process')
+              Add-Content -Path $env:GITHUB_ENV -Value $line
+            }
+          }
+          if (-not (Get-Command cl.exe -ErrorAction SilentlyContinue)) {
+            throw 'MSVC compiler was not added to PATH.'
+          }
+          if (-not (Get-Command ninja.exe -ErrorAction SilentlyContinue)) {
+            throw 'Ninja was not found on the Windows runner.'
+          }
+      - name: Set up compiler cache
+        uses: mozilla-actions/sccache-action@v0.0.10
+        with:
+          version: v0.16.0
       - name: Configure CMake
-        run: cmake -S . -B build -A x64
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G Ninja `
+            "-DCMAKE_BUILD_TYPE=$env:BUILD_TYPE" `
+            "-DCMAKE_CXX_COMPILER_LAUNCHER=$env:SCCACHE_PATH"
+      - name: Restore QmlMaterial build cache
+        id: qml-material-cache-restore
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            build/_deps/qml_material-build
+            build/_deps/qml_material-src
+            build/_deps/qml_material-subbuild
+            build/qml_modules/Qcm/Material
+            build/.ninja_deps
+            build/.ninja_log
+          key: qml-material-${{ env.CMAKE_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-ninja-${{ steps.runner-image.outputs.version }}-qt${{ env.QT_VERSION }}-${{ env.BUILD_TYPE }}-${{ hashFiles('CMakeLists.txt', 'flake.lock') }}
+          restore-keys: |
+            qml-material-${{ env.CMAKE_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-ninja-${{ steps.runner-image.outputs.version }}-qt${{ env.QT_VERSION }}-${{ env.BUILD_TYPE }}-
       - name: Build
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+      - name: Save QmlMaterial build cache
+        if: steps.qml-material-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            build/_deps/qml_material-build
+            build/_deps/qml_material-src
+            build/_deps/qml_material-subbuild
+            build/qml_modules/Qcm/Material
+            build/.ninja_deps
+            build/.ninja_log
+          key: ${{ steps.qml-material-cache-restore.outputs.cache-primary-key }}
       - name: Validate QML
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --target connecttool-qt_qmllint
       - name: Test
@@ -134,13 +205,25 @@ jobs:
           $env:VCINSTALLDIR = Join-Path $vsInstall 'VC'
           $projectDir = (Get-Location).ProviderPath
           $runtime = Join-Path $dest 'bin\runtime'
+          $qmlScanDir = Join-Path $env:RUNNER_TEMP 'connecttool-qml-scan'
+          Remove-Item $qmlScanDir -Recurse -Force -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path $qmlScanDir -Force | Out-Null
+          Copy-Item (Join-Path $projectDir 'qml\*') -Destination $qmlScanDir -Recurse -Force
+          $qmlMaterialSource = Join-Path $projectDir 'build\_deps\qml_material-src\qml'
+          if (-not (Test-Path $qmlMaterialSource -PathType Container)) {
+            throw "QmlMaterial QML sources not found at $qmlMaterialSource"
+          }
+          $qmlMaterialScanDir = Join-Path $qmlScanDir 'QmlMaterial'
+          New-Item -ItemType Directory -Path $qmlMaterialScanDir -Force | Out-Null
+          Copy-Item (Join-Path $qmlMaterialSource '*') `
+            -Destination $qmlMaterialScanDir -Recurse -Force
           & $windeploy --release --no-compiler-runtime --no-translations `
             --skip-plugin-types generic,networkinformation,qmltooling `
             --exclude-plugins qcertonlybackend,qgif,qico,qjpeg,qopensslbackend `
             --dir "$dest\bin" `
             --plugindir "$runtime\plugins" `
             --qml-deploy-dir "$runtime\qml" `
-            --qmldir "$projectDir\qml" `
+            --qmldir "$qmlScanDir" `
             "$dest\bin\connecttool-qt.exe"
           if ($LASTEXITCODE -ne 0) {
             throw "windeployqt failed with exit code $LASTEXITCODE"
@@ -222,7 +305,9 @@ jobs:
             'Qt6QmlWorkerScript.dll',
             'Qt6Quick.dll',
             'Qt6QuickControls2.dll',
+            'Qt6QuickEffects.dll',
             'Qt6QuickLayouts.dll',
+            'Qt6QuickShapes.dll',
             'Qt6QuickTemplates2.dll',
             'Qt6Svg.dll',
             'Qt6Widgets.dll',
@@ -235,6 +320,12 @@ jobs:
             'runtime\plugins\styles\qmodernwindowsstyle.dll',
             'runtime\plugins\tls\qschannelbackend.dll',
             'runtime\qml\QtQuick\qtquick2plugin.dll',
+            'runtime\qml\QtQuick\Effects\effectsplugin.dll',
+            'runtime\qml\QtQuick\Effects\qmldir',
+            'runtime\qml\QtQuick\Shapes\qmlshapesplugin.dll',
+            'runtime\qml\QtQuick\Shapes\qmldir',
+            'runtime\qml\QtQuick\Window\quickwindowplugin.dll',
+            'runtime\qml\QtQuick\Window\qmldir',
             'MSVCP140.dll',
             'MSVCP140_ATOMIC_WAIT.dll',
             'VCRUNTIME140.dll',
@@ -289,11 +380,22 @@ jobs:
           }
           Copy-Item $dll.FullName -Destination (Join-Path $dest 'wintun.dll') -Force
       - name: Render-test deployed Windows bundle
+        timeout-minutes: 3
         shell: pwsh
         run: |
-          Remove-Item Env:QT_QPA_PLATFORM -ErrorAction SilentlyContinue
+          $dest = Join-Path $env:GITHUB_WORKSPACE 'install'
+          @(
+            'QML2_IMPORT_PATH',
+            'QML_IMPORT_PATH',
+            'QT_PLUGIN_PATH',
+            'QT_QPA_PLATFORM',
+            'QT_QPA_PLATFORM_PLUGIN_PATH'
+          ) | ForEach-Object {
+            Remove-Item "Env:$_" -ErrorAction SilentlyContinue
+          }
+          $env:PATH = "$dest;$env:SystemRoot\System32;$env:SystemRoot"
           $env:QSG_INFO = '1'
-          $exe = Join-Path $env:GITHUB_WORKSPACE 'install\connecttool-qt.exe'
+          $exe = Join-Path $dest 'connecttool-qt.exe'
           $screenshot = Join-Path $env:RUNNER_TEMP 'connecttool-render-test.png'
           $log = Join-Path $env:RUNNER_TEMP 'connecttool-render-test.log'
           $arguments = @(
@@ -301,7 +403,8 @@ jobs:
             '--windows-uia-probe',
             "--log-file=$log"
           )
-          $process = Start-Process -FilePath $exe -ArgumentList $arguments -Wait -PassThru
+          $process = Start-Process -FilePath $exe -WorkingDirectory $dest `
+            -ArgumentList $arguments -Wait -PassThru
           if (Test-Path $log) {
             Get-Content $log
           }
@@ -317,13 +420,17 @@ jobs:
           if (-not (Select-String -Path $log -Pattern 'graphics API 4')) {
             throw "The compatible path did not retain the normal D3D11 renderer"
           }
+          if (Select-String -Path $log -Pattern 'module ".+" is not installed') {
+            throw "The deployed Windows bundle loaded an incomplete QML runtime"
+          }
           $fallbackScreenshot = Join-Path $env:RUNNER_TEMP 'connecttool-fallback-render-test.png'
           $fallbackLog = Join-Path $env:RUNNER_TEMP 'connecttool-fallback-render-test.log'
-          $fallbackProcess = Start-Process -FilePath $exe -ArgumentList @(
-            '--simulate-renderer-startup-failure',
-            "--qml-screenshot=$fallbackScreenshot",
-            "--log-file=$fallbackLog"
-          ) -Wait -PassThru
+          $fallbackProcess = Start-Process -FilePath $exe -WorkingDirectory $dest `
+            -ArgumentList @(
+              '--simulate-renderer-startup-failure',
+              "--qml-screenshot=$fallbackScreenshot",
+              "--log-file=$fallbackLog"
+            ) -Wait -PassThru
           if (Test-Path $fallbackLog) {
             Get-Content $fallbackLog
           }
@@ -339,6 +446,9 @@ jobs:
           }
           if (-not (Select-String -Path $fallbackLog -Pattern 'graphics API 1')) {
             throw "Automatic renderer fallback did not initialize Qt's software scene graph"
+          }
+          if (Select-String -Path $fallbackLog -Pattern 'module ".+" is not installed') {
+            throw "The automatic fallback loaded an incomplete QML runtime"
           }
       - name: Package artifact
         id: package
@@ -364,6 +474,10 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: recursive
+      - name: Read runner image version
+        id: runner-image
+        shell: bash
+        run: echo "version=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
       - name: Install Qt
         uses: jurplel/install-qt-action@v4
         with:
@@ -427,8 +541,34 @@ jobs:
             -DCMAKE_BUILD_TYPE="${{ env.BUILD_TYPE }}" \
             -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}" \
             -DCMAKE_OSX_ARCHITECTURES=x86_64
+      - name: Restore QmlMaterial build cache
+        id: qml-material-cache-restore
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            build/_deps/qml_material-build
+            build/_deps/qml_material-src
+            build/_deps/qml_material-subbuild
+            build/qml_modules/Qcm/Material
+            build/.ninja_deps
+            build/.ninja_log
+          key: qml-material-${{ env.CMAKE_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runner-image.outputs.version }}-qt${{ env.QT_VERSION }}-${{ env.BUILD_TYPE }}-${{ hashFiles('CMakeLists.txt', 'flake.lock') }}
+          restore-keys: |
+            qml-material-${{ env.CMAKE_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runner-image.outputs.version }}-qt${{ env.QT_VERSION }}-${{ env.BUILD_TYPE }}-
       - name: Build
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+      - name: Save QmlMaterial build cache
+        if: steps.qml-material-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            build/_deps/qml_material-build
+            build/_deps/qml_material-src
+            build/_deps/qml_material-subbuild
+            build/qml_modules/Qcm/Material
+            build/.ninja_deps
+            build/.ninja_log
+          key: ${{ steps.qml-material-cache-restore.outputs.cache-primary-key }}
       - name: Validate QML
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --target connecttool-qt_qmllint
       - name: Test
@@ -527,6 +667,10 @@ jobs:
         uses: actions/checkout@v7
         with:
           submodules: recursive
+      - name: Read runner image version
+        id: runner-image
+        shell: bash
+        run: echo "version=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
       - name: Install build dependencies
         shell: bash
         run: |
@@ -617,8 +761,34 @@ jobs:
           cmake -S . -B build -G Ninja \
             -DCMAKE_BUILD_TYPE="${{ env.BUILD_TYPE }}" \
             -DCMAKE_INSTALL_PREFIX=/usr
+      - name: Restore QmlMaterial build cache
+        id: qml-material-cache-restore
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            build/_deps/qml_material-build
+            build/_deps/qml_material-src
+            build/_deps/qml_material-subbuild
+            build/qml_modules/Qcm/Material
+            build/.ninja_deps
+            build/.ninja_log
+          key: qml-material-${{ env.CMAKE_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runner-image.outputs.version }}-qt${{ env.QT_VERSION }}-${{ env.BUILD_TYPE }}-${{ hashFiles('CMakeLists.txt', 'flake.lock') }}
+          restore-keys: |
+            qml-material-${{ env.CMAKE_CACHE_SCHEMA }}-${{ runner.os }}-${{ runner.arch }}-${{ steps.runner-image.outputs.version }}-qt${{ env.QT_VERSION }}-${{ env.BUILD_TYPE }}-
       - name: Build (Linux)
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --parallel
+      - name: Save QmlMaterial build cache
+        if: steps.qml-material-cache-restore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            build/_deps/qml_material-build
+            build/_deps/qml_material-src
+            build/_deps/qml_material-subbuild
+            build/qml_modules/Qcm/Material
+            build/.ninja_deps
+            build/.ninja_log
+          key: ${{ steps.qml-material-cache-restore.outputs.cache-primary-key }}
       - name: Validate QML
         run: cmake --build build --config ${{ env.BUILD_TYPE }} --target connecttool-qt_qmllint
       - name: Test

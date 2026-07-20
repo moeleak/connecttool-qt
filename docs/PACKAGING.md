@@ -32,7 +32,7 @@ can change search paths. Those DLLs must remain beside `connecttool-qt.exe`.
 | `wintun.dll` | Windows TUN mode |
 | `Qt6Core.dll`, `Qt6Gui.dll`, `Qt6Network.dll` | Qt foundation, rendering, and update networking |
 | `Qt6Qml.dll`, `Qt6QmlMeta.dll`, `Qt6QmlModels.dll`, `Qt6QmlWorkerScript.dll` | QML engine dependency closure |
-| `Qt6Quick.dll`, `Qt6QuickControls2.dll`, `Qt6QuickLayouts.dll`, `Qt6QuickTemplates2.dll` | Qt Quick and QmlMaterial controls |
+| `Qt6Quick.dll`, `Qt6QuickControls2.dll`, `Qt6QuickEffects.dll`, `Qt6QuickLayouts.dll`, `Qt6QuickShapes.dll`, `Qt6QuickTemplates2.dll` | Qt Quick and QmlMaterial controls, effects, and vector shapes |
 | `Qt6OpenGL.dll`, `D3Dcompiler_47.dll`, `opengl32sw.dll` | D3D shader compiler plus OpenGL/software compatibility fallback |
 | `Qt6LabsPlatform.dll`, `Qt6Widgets.dll` | Native update save dialog |
 | `Qt6Svg.dll` | About-page SVG artwork |
@@ -42,8 +42,11 @@ can change search paths. Those DLLs must remain beside `connecttool-qt.exe`.
 
 `runtime/plugins` contains only the Windows platform plugin, SVG image/icon
 plugins, the native widget style, and the Schannel TLS backend. `runtime/qml`
-contains only modules found by `qmlimportscanner`; `*.qmltypes` tooling metadata
-is removed. `licenses` contains the four redistributed license/notice files.
+contains only modules found by `qmlimportscanner`. The scanner receives both
+ConnectTool and the pinned QmlMaterial QML sources so static transitive imports
+such as Effects, Shapes, and Window cannot be hidden by the build machine's Qt
+installation. `*.qmltypes` tooling metadata is removed. `licenses` contains the
+four redistributed license/notice files.
 
 The package rejects QML debugger plugins, generic touch input, network discovery,
 OpenSSL/certificate-only TLS backends, GIF/ICO/JPEG plugins, translations, a
@@ -86,3 +89,13 @@ frame: it keeps the platform-default renderer when startup succeeds, and
 automatically relaunches the same executable with Qt's software scene graph if
 the renderer exits or times out before that frame. No secondary launcher is
 packaged.
+
+## CI compilation cache
+
+All platform jobs persist QmlMaterial's pinned source, generated QML module,
+sub-build, and incremental Ninja metadata. Cache keys include the runner image,
+architecture, Qt version, build type, and dependency configuration hash.
+Windows uses Ninja plus sccache so generated QmlMaterial C++ compilation is
+content-addressed instead of depending on Visual Studio project timestamps.
+Runner-image or Qt upgrades therefore invalidate incompatible output while
+ordinary application changes reuse the third-party build.

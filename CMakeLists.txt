@@ -393,6 +393,10 @@ set_source_files_properties(qml/ConnectTool/Theme.qml
 qt_add_qml_module(connecttool-qt
     URI ConnectTool
     VERSION 1.0
+    IMPORTS
+        QtQuick.Effects
+        QtQuick.Shapes
+        QtQuick.Window
     DEPENDENCIES
         TARGET qml_material
     QML_FILES

@@ -232,10 +232,12 @@ std::optional<int> superviseRendererStartup() {
     return EXIT_SUCCESS;
   }
 
-  MessageBoxW(nullptr,
-              L"ConnectTool \u56fe\u5f62\u754c\u9762\u542f\u52a8\u5931\u8d25\u3002\n\u8bf7\u5c06 "
-              L"logs\\connecttool.log \u53d1\u7ed9\u5f00\u53d1\u8005\u3002",
-              L"ConnectTool", MB_OK | MB_ICONERROR);
+  if (!waitForChildExit) {
+    MessageBoxW(nullptr,
+                L"ConnectTool \u56fe\u5f62\u754c\u9762\u542f\u52a8\u5931\u8d25\u3002\n\u8bf7\u5c06 "
+                L"logs\\connecttool.log \u53d1\u7ed9\u5f00\u53d1\u8005\u3002",
+                L"ConnectTool", MB_OK | MB_ICONERROR);
+  }
   return failureExitCode(software);
 }
 
