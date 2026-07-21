@@ -114,7 +114,7 @@ endif()
 include(deps/cmake/QmlMaterial.cmake)
 
 # Read version from git tag if available
-set(CONNECTTOOL_VERSION "1.6.0-alpha.1")
+set(CONNECTTOOL_VERSION "1.6.0")
 if(DEFINED ENV{CONNECTTOOL_VERSION})
     set(CONNECTTOOL_VERSION "$ENV{CONNECTTOOL_VERSION}")
 endif()

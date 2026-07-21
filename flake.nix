@@ -66,7 +66,7 @@
         {
           default = pkgs.stdenv.mkDerivation rec {
             pname = "connecttool-qt";
-            version = "1.6.0-alpha.1";
+            version = "1.6.0";
             dontWrapQtApps = pkgs.stdenv.isDarwin;
 
             # Keep entire working tree (including untracked) so new sources are present.
@@ -135,10 +135,8 @@
               clang-tools
             ];
             CMAKE_EXPORT_COMPILE_COMMANDS = "1";
-            NIXPKGS_QT6_QML_IMPORT_PATH =
-              "${pkgs.qt6.qtdeclarative}/${pkgs.qt6.qtbase.qtQmlPrefix}";
-            NIXPKGS_QT6_PLUGIN_PATH =
-              "${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}:${pkgs.qt6.qtsvg}/${pkgs.qt6.qtbase.qtPluginPrefix}";
+            NIXPKGS_QT6_QML_IMPORT_PATH = "${pkgs.qt6.qtdeclarative}/${pkgs.qt6.qtbase.qtQmlPrefix}";
+            NIXPKGS_QT6_PLUGIN_PATH = "${pkgs.qt6.qtbase}/${pkgs.qt6.qtbase.qtPluginPrefix}:${pkgs.qt6.qtsvg}/${pkgs.qt6.qtbase.qtPluginPrefix}";
             shellHook = ''
               export CONNECTTOOL_VERSION=${self.packages.${system}.default.version}
               echo "Qt: $(qmake --version | grep -o 'Qt version [0-9.]*' | cut -d ' ' -f 3)"
