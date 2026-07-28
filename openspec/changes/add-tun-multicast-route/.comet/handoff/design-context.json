@@ -1,0 +1,14 @@
+{
+  "change": "add-tun-multicast-route",
+  "phase": "design",
+  "mode": "compact",
+  "canonical_spec": "openspec",
+  "generated_by": "comet-handoff.sh",
+  "context_hash": "a572e8ea4acad4ac0643a957f4af939be66c2ef526d1f81a760627d259d08b15",
+  "files": [
+    { "path": "openspec/changes/add-tun-multicast-route/proposal.md", "sha256": "27d23bac4262687b0fd95fb4825c7ac8cbfa019f9857bb2d473f024d65db62a0" },
+    { "path": "openspec/changes/add-tun-multicast-route/design.md", "sha256": "46446651d63a082a01f670f744f054574f19bb5c63ba8b66bbc92e99f9f0f6b9" },
+    { "path": "openspec/changes/add-tun-multicast-route/tasks.md", "sha256": "c69fddaa6af083df4b72998bededb34ff5777686fcf68594e88da9bb80408a27" },
+    { "path": "openspec/changes/add-tun-multicast-route/specs/tun-multicast-routing/spec.md", "sha256": "68aeee47296a05539ba46c512ce03fb0518b31670d061849d4a9470c2bc31506" }
+  ]
+}
