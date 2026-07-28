@@ -86,3 +86,9 @@
 - **commit message 必须全英文**(用户明确要求,所有派发 prompt 必须包含此约束)
 - review-fix round: Task 4 = 0/3
 - 主 build/ 目录因无关原因损坏(CoreAudio blocks、OpenGL/gl.h),单文件验证走 compile_commands.json
+
+## History Rewrite（2026-07-28 用户要求）
+
+- 31 个提交重组为 6 个逻辑提交,全部英文、无 Co-Authored-By;备份分支 `backup/pre-rewrite-20260728`,tree 与重写前逐字节一致(diff 为空)
+- 新提交:8ec61d4(docs/openspec)→ 144a059(RouteManager+Linux)→ 8e1d1d7(macOS)→ e23e804(Windows)→ 5225ba7(TUN 委托)→ 8e7589d(Bridge 集成)
+- 此前所有旧 hash(1d16f01…1b58f03)仅存在于备份分支,不再引用
