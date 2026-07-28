@@ -156,6 +156,7 @@ if(APPLE)
 
     add_executable(connecttool-tun-daemon
         src/platform/tun/tun_macos_daemon.cpp
+        src/platform/route/route_manager_macos.cpp
         src/platform/tun/tun_privileged_helper.cpp)
     target_include_directories(connecttool-tun-daemon PRIVATE ${CMAKE_SOURCE_DIR}/src)
     add_dependencies(connecttool-qt connecttool-tun-daemon)

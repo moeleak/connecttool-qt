@@ -23,6 +23,15 @@ public:
   // unsupported.
   virtual bool add_route(const std::string &network,
                          const std::string &netmask) = 0;
+  // Remove a previously installed route; best-effort semantics. The default
+  // implementation is a no-op success for platforms where the kernel reclaims
+  // interface routes on close().
+  virtual bool remove_route(const std::string &network,
+                            const std::string &netmask) {
+    (void)network;
+    (void)netmask;
+    return true;
+  }
   virtual bool set_mtu(int mtu) = 0;
   virtual bool set_up(bool up) = 0;
   virtual bool set_non_blocking(bool nonBlocking) = 0;

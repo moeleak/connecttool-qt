@@ -20,7 +20,6 @@
 #include <netioapi.h>
 
 #include <bit>
-#include <limits>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -32,7 +31,6 @@ struct MibTableDeleter final {
   void operator()(void *table) const noexcept { FreeMibTable(table); }
 };
 
-using RouteTable = std::unique_ptr<MIB_IPFORWARD_TABLE2, MibTableDeleter>;
 using AddressTable = std::unique_ptr<MIB_UNICASTIPADDRESS_TABLE, MibTableDeleter>;
 
 [[nodiscard]] std::optional<IN_ADDR> parseAddress(std::string_view text) {
@@ -59,26 +57,10 @@ using AddressTable = std::unique_ptr<MIB_UNICASTIPADDRESS_TABLE, MibTableDeleter
   return prefix;
 }
 
-[[nodiscard]] IN_ADDR networkAddress(IN_ADDR address, UINT8 prefix) noexcept {
-  const std::uint32_t mask =
-      prefix == 0 ? 0U : std::numeric_limits<std::uint32_t>::max() << (32U - prefix);
-  address.S_un.S_addr = htonl(ntohl(address.S_un.S_addr) & mask);
-  return address;
-}
-
 [[nodiscard]] NET_LUID makeLuid(std::uint64_t value) noexcept {
   NET_LUID luid{};
   luid.Value = value;
   return luid;
-}
-
-[[nodiscard]] bool matchesRoute(const MIB_IPFORWARD_ROW2 &candidate,
-                                const MIB_IPFORWARD_ROW2 &desired) noexcept {
-  return candidate.InterfaceLuid.Value == desired.InterfaceLuid.Value &&
-         candidate.DestinationPrefix.PrefixLength == desired.DestinationPrefix.PrefixLength &&
-         candidate.DestinationPrefix.Prefix.si_family == AF_INET &&
-         candidate.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr ==
-             desired.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr;
 }
 
 [[nodiscard]] std::string systemMessage(unsigned long error) {
@@ -163,52 +145,6 @@ bool WindowsNetworkConfig::clearIpv4Addresses() {
       return fail("Failed to remove an existing IPv4 address", deleteResult);
     }
   }
-  return true;
-}
-
-bool WindowsNetworkConfig::ensureOnLinkRoute(const Ipv4RouteSpec &route) {
-  if (!isBound()) {
-    return fail("Route interface is not bound", ERROR_INVALID_PARAMETER);
-  }
-
-  const auto network = parseAddress(route.network);
-  const auto prefix = prefixLength(route.netmask);
-  if (!network || !prefix) {
-    return fail("Invalid IPv4 route", ERROR_INVALID_PARAMETER);
-  }
-
-  MIB_IPFORWARD_ROW2 desired{};
-  InitializeIpForwardEntry(&desired);
-  desired.InterfaceLuid = makeLuid(interface_.luid);
-  desired.InterfaceIndex = interface_.index;
-  desired.DestinationPrefix.Prefix.Ipv4.sin_family = AF_INET;
-  desired.DestinationPrefix.Prefix.Ipv4.sin_addr = networkAddress(*network, *prefix);
-  desired.DestinationPrefix.PrefixLength = *prefix;
-  desired.NextHop.Ipv4.sin_family = AF_INET;
-  desired.SitePrefixLength = *prefix;
-  desired.Metric = 1;
-  desired.Protocol = MIB_IPPROTO_NETMGMT;
-
-  MIB_IPFORWARD_TABLE2 *rawTable = nullptr;
-  const DWORD tableResult = GetIpForwardTable2(AF_INET, &rawTable);
-  if (tableResult != NO_ERROR) {
-    return fail("Failed to enumerate IPv4 routes", tableResult);
-  }
-  const RouteTable table{rawTable};
-
-  for (ULONG index = 0; index < table->NumEntries; ++index) {
-    const auto &candidate = table->Table[index];
-    if (matchesRoute(candidate, desired)) {
-      lastError_.clear();
-      return true;
-    }
-  }
-
-  const DWORD createResult = CreateIpForwardEntry2(&desired);
-  if (createResult != NO_ERROR && createResult != ERROR_OBJECT_ALREADY_EXISTS) {
-    return fail("Failed to create IPv4 route", createResult);
-  }
-  lastError_.clear();
   return true;
 }
 

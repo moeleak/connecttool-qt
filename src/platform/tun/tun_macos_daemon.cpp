@@ -1,4 +1,5 @@
 #include "tun_privileged_helper.h"
+#include "platform/route/route_manager.h"
 
 #include <arpa/inet.h>
 #include <cerrno>
@@ -143,23 +144,6 @@ bool validIfName(const std::string &name) {
   return true;
 }
 
-int maskToPrefix(const std::string &mask) {
-  in_addr addr {};
-  if (inet_pton(AF_INET, mask.c_str(), &addr) != 1) {
-    return -1;
-  }
-  uint32_t m = ntohl(addr.s_addr);
-  int prefix = 0;
-  while (m & 0x80000000) {
-    prefix++;
-    m <<= 1;
-  }
-  if (m != 0) {
-    return -1;
-  }
-  return prefix;
-}
-
 std::unordered_map<std::string, std::string>
 parseArgs(const std::string &line, std::string *verb) {
   std::unordered_map<std::string, std::string> args;
@@ -242,14 +226,6 @@ bool runIfconfig(const std::vector<std::string> &args, std::string *error) {
   std::vector<std::string> cmd;
   cmd.reserve(args.size() + 1);
   cmd.emplace_back("/sbin/ifconfig");
-  cmd.insert(cmd.end(), args.begin(), args.end());
-  return runCommand(cmd, error);
-}
-
-bool runRoute(const std::vector<std::string> &args, std::string *error) {
-  std::vector<std::string> cmd;
-  cmd.reserve(args.size() + 1);
-  cmd.emplace_back("/sbin/route");
   cmd.insert(cmd.end(), args.begin(), args.end());
   return runCommand(cmd, error);
 }
@@ -425,16 +401,15 @@ void handleClient(int fd) {
       sendResponse(fd, "ERR invalid ADD_ROUTE arguments");
       return;
     }
+    auto manager = tun::createRouteManager(ifname);
+    if (!manager) {
+      sendResponse(fd, "ERR route manager unavailable");
+      return;
+    }
     std::string error;
-    const int prefix = maskToPrefix(mask);
-    const std::string cidr =
-        prefix > 0 ? network + "/" + std::to_string(prefix) : network;
-    if (!runRoute({"-n", "add", "-net", cidr, "-interface", ifname}, &error)) {
-      if (!runRoute({"-n", "change", "-net", cidr, "-interface", ifname},
-                    &error)) {
-        sendResponse(fd, "ERR " + error);
-        return;
-      }
+    if (!manager->addRoute({network, mask}, &error)) {
+      sendResponse(fd, "ERR " + error);
+      return;
     }
     sendResponse(fd, "OK");
     return;

@@ -1,6 +1,7 @@
 #ifdef __linux__
 
 #include "tun_interface.h"
+#include "platform/route/route_manager.h"
 #include <arpa/inet.h>
 #include <cctype>
 #include <cerrno>
@@ -10,7 +11,6 @@
 #include <linux/if_tun.h>
 // Avoid including <net/if.h> with the kernel headers to prevent struct redefs
 // on some glibc versions.
-#include <stdexcept>
 #include <string>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -39,22 +39,6 @@ int openControlSocket(std::string &error) {
   return sock;
 }
 
-int maskToPrefix(const std::string &mask) {
-  in_addr addr{};
-  if (inet_pton(AF_INET, mask.c_str(), &addr) != 1) {
-    return -1;
-  }
-  uint32_t m = ntohl(addr.s_addr);
-  int prefix = 0;
-  while (m & 0x80000000) {
-    prefix++;
-    m <<= 1;
-  }
-  if (m != 0) {
-    return -1;
-  }
-  return prefix;
-}
 } // namespace
 
 class TunLinux : public TunInterface {
@@ -92,6 +76,7 @@ public:
     }
 
     name_ = ifr.ifr_name;
+    routeManager_ = createRouteManager(name_);
     mtu_ = mtu;
     if (mtu > 0) {
       set_mtu(mtu_);
@@ -104,6 +89,7 @@ public:
       ::close(fd_);
       fd_ = -1;
     }
+    routeManager_.reset();
   }
 
   bool is_open() const override { return fd_ >= 0; }
@@ -176,28 +162,30 @@ public:
 
   bool add_route(const std::string &network,
                  const std::string &netmask) override {
-    const int prefix = maskToPrefix(netmask);
-    const std::string cidr =
-        prefix > 0 ? network + "/" + std::to_string(prefix) : network;
-    // Best-effort: add or replace a connected route via ip(8)
-    std::string cmd = "ip route replace " + cidr + " dev " + name_ +
-                      " proto static 2>/dev/null";
-    if (::system(cmd.c_str()) == 0) {
-      return true;
+    if (!routeManager_) {
+      lastError_ = "Route manager unavailable";
+      return false;
     }
-    // Fallback: try classic route add/change, ignore if it already exists.
-    cmd = "route add -net " + network + " netmask " + netmask + " dev " +
-          name_ + " 2>/dev/null";
-    if (::system(cmd.c_str()) == 0) {
-      return true;
+    std::string error;
+    if (!routeManager_->addRoute({network, netmask}, &error)) {
+      lastError_ = error;
+      return false;
     }
-    cmd = "route change -net " + network + " netmask " + netmask + " dev " +
-          name_ + " 2>/dev/null";
-    if (::system(cmd.c_str()) == 0) {
-      return true;
+    return true;
+  }
+
+  bool remove_route(const std::string &network,
+                    const std::string &netmask) override {
+    if (!routeManager_) {
+      lastError_ = "Route manager unavailable";
+      return false;
     }
-    lastError_ = "Failed to add route " + network;
-    return false;
+    std::string error;
+    if (!routeManager_->removeRoute({network, netmask}, &error)) {
+      lastError_ = error;
+      return false;
+    }
+    return true;
   }
 
   bool set_mtu(int mtu) override {
@@ -284,6 +272,7 @@ private:
   std::string name_;
   std::string lastError_;
   int mtu_;
+  std::unique_ptr<RouteManager> routeManager_;
 };
 
 std::unique_ptr<TunInterface> create_tun() {

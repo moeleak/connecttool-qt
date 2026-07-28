@@ -1,5 +1,6 @@
 #ifdef _WIN32
 
+#include "platform/route/route_manager.h"
 #include "platform/windows/firewall_windows.h"
 #include "tun_interface.h"
 #include "windows_network_config.h"
@@ -183,11 +184,13 @@ public:
       return false;
     }
     networkConfig_.bind({.luid = adapterLuid.Value, .index = adapterIndex});
+    routeManager_ = createRouteManager(deviceName_);
 
     session_ = WintunStartSession(adapter_, 0x400000);
     if (!session_) {
       setWindowsError("Failed to start WinTUN session");
       networkConfig_.clear();
+      routeManager_.reset();
       WintunCloseAdapter(adapter_);
       adapter_ = nullptr;
       return false;
@@ -209,6 +212,7 @@ public:
       WintunCloseAdapter(adapter_);
       adapter_ = nullptr;
     }
+    routeManager_.reset();
     networkConfig_.clear();
     deviceName_.clear();
   }
@@ -282,8 +286,26 @@ public:
   }
 
   bool add_route(const std::string &network, const std::string &netmask) override {
-    if (!networkConfig_.ensureOnLinkRoute({.network = network, .netmask = netmask})) {
-      setError(std::string{networkConfig_.lastError()});
+    if (!routeManager_) {
+      setError("Route manager unavailable");
+      return false;
+    }
+    std::string error;
+    if (!routeManager_->addRoute({network, netmask}, &error)) {
+      setError(error);
+      return false;
+    }
+    return true;
+  }
+
+  bool remove_route(const std::string &network, const std::string &netmask) override {
+    if (!routeManager_) {
+      setError("Route manager unavailable");
+      return false;
+    }
+    std::string error;
+    if (!routeManager_->removeRoute({network, netmask}, &error)) {
+      setError(error);
       return false;
     }
     return true;
@@ -363,6 +385,7 @@ private:
   std::string lastError_;
   bool nonBlocking_ = false;
   WindowsNetworkConfig networkConfig_;
+  std::unique_ptr<RouteManager> routeManager_;
 };
 
 std::unique_ptr<TunInterface> create_tun() { return std::make_unique<TunWindows>(); }

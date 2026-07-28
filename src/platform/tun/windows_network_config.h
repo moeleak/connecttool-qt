@@ -18,18 +18,12 @@ struct Ipv4AddressSpec final {
   std::string_view netmask;
 };
 
-struct Ipv4RouteSpec final {
-  std::string_view network;
-  std::string_view netmask;
-};
-
 class WindowsNetworkConfig final {
 public:
   void bind(WindowsInterfaceId interfaceId) noexcept;
   void clear() noexcept;
 
   [[nodiscard]] bool assignAddress(const Ipv4AddressSpec &address);
-  [[nodiscard]] bool ensureOnLinkRoute(const Ipv4RouteSpec &route);
   [[nodiscard]] bool setMtu(int mtu);
   [[nodiscard]] bool setEnabled(bool enabled);
   [[nodiscard]] std::string_view lastError() const noexcept { return lastError_; }

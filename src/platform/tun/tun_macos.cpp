@@ -2,6 +2,7 @@
 
 #include "tun_interface.h"
 #include "tun_privileged_helper.h"
+#include "platform/route/route_manager.h"
 #include <arpa/inet.h>
 #include <cctype>
 #include <cerrno>
@@ -46,22 +47,6 @@ bool validAddress(const std::string &text) {
   return true;
 }
 
-int maskToPrefix(const std::string &mask) {
-  in_addr addr{};
-  if (inet_pton(AF_INET, mask.c_str(), &addr) != 1) {
-    return -1;
-  }
-  uint32_t m = ntohl(addr.s_addr);
-  int prefix = 0;
-  while (m & 0x80000000) {
-    prefix++;
-    m <<= 1;
-  }
-  if (m != 0) {
-    return -1;
-  }
-  return prefix;
-}
 } // namespace
 
 class TunMacOS : public TunInterface {
@@ -139,6 +124,7 @@ public:
     if (mtu_ > 0) {
       set_mtu(mtu_);
     }
+    routeManager_ = createRouteManager(name_);
     return true;
   }
 
@@ -147,6 +133,7 @@ public:
       ::close(fd_);
       fd_ = -1;
     }
+    routeManager_.reset();
     usingHelper_ = false;
   }
 
@@ -219,9 +206,6 @@ public:
 
   bool add_route(const std::string &network,
                  const std::string &netmask) override {
-    const int prefix = maskToPrefix(netmask);
-    const std::string cidr =
-        prefix > 0 ? network + "/" + std::to_string(prefix) : network;
     if (usingHelper_) {
       std::string error;
       if (!helperAddRoute(network, netmask, name_, &error)) {
@@ -230,21 +214,35 @@ public:
       }
       return true;
     }
-    // Point the subnet at this utun interface; best effort.
-    std::ostringstream cmd;
-    cmd << "/sbin/route -n add -net " << cidr << " -interface " << name_;
-    if (::system(cmd.str().c_str()) == 0) {
+    if (!routeManager_) {
+      lastError_ = "Route manager unavailable";
+      return false;
+    }
+    std::string error;
+    if (!routeManager_->addRoute({network, netmask}, &error)) {
+      lastError_ = error;
+      return false;
+    }
+    return true;
+  }
+
+  bool remove_route(const std::string &network,
+                    const std::string &netmask) override {
+    if (usingHelper_) {
+      // The daemon protocol has no REMOVE_ROUTE; the kernel reclaims
+      // interface routes when the utun device is closed.
       return true;
     }
-    // Try to change existing route if add failed (e.g., already present).
-    std::ostringstream cmdChange;
-    cmdChange << "/sbin/route -n change -net " << cidr << " -interface "
-              << name_;
-    if (::system(cmdChange.str().c_str()) == 0) {
-      return true;
+    if (!routeManager_) {
+      lastError_ = "Route manager unavailable";
+      return false;
     }
-    lastError_ = "route add/change failed for " + network;
-    return false;
+    std::string error;
+    if (!routeManager_->removeRoute({network, netmask}, &error)) {
+      lastError_ = error;
+      return false;
+    }
+    return true;
   }
 
   bool set_mtu(int mtu) override {
@@ -319,6 +317,7 @@ private:
   std::string lastError_;
   int mtu_;
   bool usingHelper_;
+  std::unique_ptr<RouteManager> routeManager_;
 };
 
 std::unique_ptr<TunInterface> create_tun() {
