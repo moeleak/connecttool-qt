@@ -136,6 +136,21 @@ void SteamVpnBridge::stop() {
     }
   }
   if (tunDevice_) {
+    // Explicit best-effort route cleanup before closing the device. Windows
+    // routes persist after adapter teardown; on macOS/Linux the kernel
+    // reclaims interface routes on close, so failures are only logged.
+    if (baseIP_ != 0 && subnetMask_ != 0) {
+      const std::string subnetMaskStr = ipToString(subnetMask_);
+      const std::string networkStr = ipToString(baseIP_ & subnetMask_);
+      if (!tunDevice_->remove_route("224.0.0.0", "240.0.0.0")) {
+        std::cerr << "[SteamVPN] Failed to remove the multicast route: "
+                  << tunDevice_->get_last_error() << std::endl;
+      }
+      if (!tunDevice_->remove_route(networkStr, subnetMaskStr)) {
+        std::cerr << "[SteamVPN] Failed to remove the subnet route: "
+                  << tunDevice_->get_last_error() << std::endl;
+      }
+    }
     tunDevice_->close(); // wake blocking reads
   }
   if (tunReadThread_.joinable()) {
@@ -487,6 +502,15 @@ void SteamVpnBridge::onNegotiationSuccess(uint32_t ipAddress, const NodeID &node
   if (!tunDevice_->add_route(networkStr, subnetMaskStr)) {
     recordFailure("Failed to add the TUN route: " + tunDevice_->get_last_error());
     return;
+  }
+
+  // Install the multicast route so LAN-discovery traffic (e.g. Minecraft
+  // 224.0.2.60:4445) is routed into the TUN device. Best-effort: failure only
+  // degrades LAN discovery and must not abort the VPN.
+  if (!tunDevice_->add_route("224.0.0.0", "240.0.0.0")) {
+    std::cerr << "[SteamVPN] Failed to add the multicast route (LAN discovery "
+                 "degraded): "
+              << tunDevice_->get_last_error() << std::endl;
   }
 
   localIP_.store(ipAddress, std::memory_order_relaxed);
