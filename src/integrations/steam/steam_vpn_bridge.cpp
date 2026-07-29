@@ -146,6 +146,10 @@ void SteamVpnBridge::stop() {
         std::cerr << "[SteamVPN] Failed to remove the multicast route: "
                   << tunDevice_->get_last_error() << std::endl;
       }
+      if (!tunDevice_->remove_route("255.255.255.255", "255.255.255.255")) {
+        std::cerr << "[SteamVPN] Failed to remove the limited-broadcast route: "
+                  << tunDevice_->get_last_error() << std::endl;
+      }
       if (!tunDevice_->remove_route(networkStr, subnetMaskStr)) {
         std::cerr << "[SteamVPN] Failed to remove the subnet route: "
                   << tunDevice_->get_last_error() << std::endl;
@@ -510,6 +514,16 @@ void SteamVpnBridge::onNegotiationSuccess(uint32_t ipAddress, const NodeID &node
   if (!tunDevice_->add_route("224.0.0.0", "240.0.0.0")) {
     std::cerr << "[SteamVPN] Failed to add the multicast route (LAN discovery "
                  "degraded): "
+              << tunDevice_->get_last_error() << std::endl;
+  }
+
+  // Capture limited broadcast (255.255.255.255) into the tunnel as well.
+  // Emulators and arcade versus platforms (GGPO-style) rely on it for
+  // low-latency LAN discovery, but without a host route the OS sends it out
+  // the physical NIC instead of the TUN device. Best-effort, same as above.
+  if (!tunDevice_->add_route("255.255.255.255", "255.255.255.255")) {
+    std::cerr << "[SteamVPN] Failed to add the limited-broadcast route (LAN "
+                 "discovery degraded): "
               << tunDevice_->get_last_error() << std::endl;
   }
 
