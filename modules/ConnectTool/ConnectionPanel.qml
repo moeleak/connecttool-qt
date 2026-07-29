@@ -164,8 +164,6 @@ AppCard {
                         label: qsTr("TUN 信息"),
                         value: App.session.tunIp.length > 0
                                ? App.session.tunIp
-                                 + (App.session.tunDevice.length > 0
-                                    ? " · " + App.session.tunDevice : "")
                                : qsTr("等待分配"),
                         icon: MD.Token.icon.hub,
                         accent: Theme.success
