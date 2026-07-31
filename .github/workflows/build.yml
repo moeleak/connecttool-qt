@@ -849,23 +849,40 @@ jobs:
         with:
           path: dist
       - name: Create release archives
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           shopt -s nullglob
-          for dir in dist/*; do
-            if [[ -d "$dir" ]]; then
-              dmg_files=("$dir"/*.dmg)
-              if (( ${#dmg_files[@]} )); then
-                continue
-              fi
-              appimage_files=("$dir"/*.AppImage)
-              if (( ${#appimage_files[@]} )); then
-                continue
-              fi
-              name="$(basename "$dir")"
-              cmake -E chdir dist cmake -E tar cf "${name}.zip" --format=zip "$name"
-            fi
-          done
+          if [[ ! "$RELEASE_VERSION" =~ ^v[0-9A-Za-z][0-9A-Za-z._-]*$ ]]; then
+            echo "::error::Unsupported release version: $RELEASE_VERSION"
+            exit 1
+          fi
+
+          windows_dir="dist/connecttool-qt-windows-x86_64"
+          macos_files=(dist/connecttool-qt-macos-x86_64/*.dmg)
+          linux_files=(dist/connecttool-qt-linux-x86_64/*.AppImage)
+          if [[ ! -d "$windows_dir" ]]; then
+            echo "::error::Windows release artifact is missing"
+            exit 1
+          fi
+          if (( ${#macos_files[@]} != 1 )); then
+            echo "::error::Expected exactly one macOS DMG"
+            exit 1
+          fi
+          if (( ${#linux_files[@]} != 1 )); then
+            echo "::error::Expected exactly one Linux AppImage"
+            exit 1
+          fi
+
+          mkdir -p dist/release
+          cmake -E chdir dist cmake -E tar cf \
+            "release/connecttool-qt-${RELEASE_VERSION}-windows-x86_64.zip" \
+            --format=zip connecttool-qt-windows-x86_64
+          cp -- "${macos_files[0]}" \
+            "dist/release/connecttool-qt-${RELEASE_VERSION}-macos-x86_64.dmg"
+          cp -- "${linux_files[0]}" \
+            "dist/release/connecttool-qt-${RELEASE_VERSION}-linux-x86_64.AppImage"
       - name: Generate release notes
         run: scripts/release/generate_release_notes.sh release-notes.md
         env:
@@ -879,9 +896,6 @@ jobs:
           make_latest: ${{ contains(github.ref_name, '-alpha') && 'false' || 'legacy' }}
           body_path: release-notes.md
           fail_on_unmatched_files: true
-          files: |
-            dist/**/*.zip
-            dist/**/*.dmg
-            dist/**/*.AppImage
+          files: dist/release/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
