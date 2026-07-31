@@ -74,12 +74,24 @@ void testDelRouteFlags() {
 }
 
 void testHostRoute() {
-  const auto msg =
-      buildRouteRequest(RTM_NEWROUTE, 1, {"10.0.0.7", "255.255.255.255"}, 3);
+  const auto msg = buildRouteRequest(RTM_NEWROUTE, 1, {"224.0.2.60", "255.255.255.255"}, 3);
   CHECK(!msg.empty());
   const auto *rtm =
       reinterpret_cast<const rtmsg *>(msg.data() + sizeof(nlmsghdr));
   CHECK(rtm->rtm_dst_len == 32);
+
+  int remaining = static_cast<int>(msg.size()) - static_cast<int>(NLMSG_LENGTH(sizeof(rtmsg)));
+  const rtattr *rta = reinterpret_cast<const rtattr *>(msg.data() + NLMSG_LENGTH(sizeof(rtmsg)));
+  for (; RTA_OK(rta, remaining); rta = RTA_NEXT(rta, remaining)) {
+    if (rta->rta_type != RTA_DST) {
+      continue;
+    }
+    in_addr expected{};
+    inet_pton(AF_INET, "224.0.2.60", &expected);
+    CHECK(std::memcmp(RTA_DATA(rta), &expected, sizeof(expected)) == 0);
+    return;
+  }
+  CHECK(false); // Host route must contain RTA_DST.
 }
 
 void testHostBitsMasked() {

@@ -8,7 +8,7 @@ base-ref: 7a2d7aae95010a38badb6f6cc501a685601d9cfa
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 引入跨平台 RouteManager 抽象（系统 API，不 shell out),VPN 启动时为 TUN 加装 `224.0.0.0/4` 组播路由（best-effort)，停止时显式删除，恢复 Minecraft 等游戏的局域网发现。
+**Goal:** 引入跨平台 RouteManager 抽象（系统 API，不 shell out),VPN 启动时为 TUN 加装 Minecraft `224.0.2.60/32` 主机路由（best-effort)，停止时显式删除，恢复 Minecraft Java 的局域网发现。
 
 **Architecture:** 新增 `src/platform/route/` 模块：`route_manager.h` 定义 `Ipv4Route`/`RouteManager`/`createRouteManager(ifname)` 工厂；Linux 用 NETLINK_ROUTE、macOS 用 PF_ROUTE routing socket(app 与 daemon 共享同一编译单元）、Windows 用 `CreateIpForwardEntry2`/`DeleteIpForwardEntry2`（路由职责从 `windows_network_config.cpp` 迁入）。三平台 `TunInterface` 实现在 `open()` 成功后持有一个 RouteManager 并委托 `add_route`/`remove_route`;`SteamVpnBridge` 在 `onNegotiationSuccess` 网段路由成功后加装组播路由、`stop()` 关 TUN 前显式删除两条路由。
 
@@ -23,7 +23,7 @@ base-ref: 7a2d7aae95010a38badb6f6cc501a685601d9cfa
 - macOS daemon 的 socket 协议不变（无 `REMOVE_ROUTE` 命令；`ADD_ROUTE` 参数与响应格式不变）。
 - `src/platform/route/` 与 daemon target 不得引入 Qt 依赖（daemon 是纯 POSIX 可执行文件）。
 - 新增源文件禁止 `#include "../..."` 形式（`tests/verify_architecture.cmake` 硬性检查），一律经 target include root:`#include "platform/route/route_manager.h"`。
-- Linux 平台本 change 仅编译验证 + 代码审查（design 已知限制），不实测。
+- Linux 平台在隔离容器中用生产 RouteManager + 真实 TUN 实测 `/32` 发送入口与清理；完整 Minecraft UI 仍由双机验收。
 
 ## 文件结构总览
 
@@ -32,7 +32,7 @@ base-ref: 7a2d7aae95010a38badb6f6cc501a685601d9cfa
 | `src/platform/route/route_manager.h` | `Ipv4Route` / `RouteManager` 抽象 / `createRouteManager` 声明 / 平台消息构造纯函数声明 | 新建 |
 | `src/platform/route/route_manager_linux.cpp` | netlink 报文构造纯函数 + `RouteManagerLinux` + Linux 工厂 | 新建 |
 | `src/platform/route/route_manager_macos.cpp` | `rt_msghdr` 报文构造纯函数 + `RouteManagerMacOS` + macOS 工厂 | 新建 |
-| `src/platform/route/route_manager_windows.cpp` | `RouteManagerWindows`（先删后建冲突处理）+ Windows 工厂 | 新建 |
+| `src/platform/route/route_manager_windows.cpp` | `RouteManagerWindows`（精确去重与 owned-route 清理）+ Windows 工厂 | 新建 |
 | `src/platform/tun/tun_interface.h` | 新增 `remove_route` 虚函数（默认 no-op) | 修改 |
 | `src/platform/tun/tun_linux.cpp` | `add_route` 委托 RouteManager，删除 `system()` 路径 | 修改 |
 | `src/platform/tun/tun_macos.cpp` | root 直执行路径委托 RouteManager(helper 路径不变） | 修改 |
@@ -977,7 +977,7 @@ git commit -m "feat(route): add macOS PF_ROUTE RouteManager with message builder
 - Produces: Windows 上 `createRouteManager(ifname)` 的定义（经 `ConvertInterfaceAliasToLuidW` + `ConvertInterfaceLuidToIndex` 解析）;Task 7 依赖它替换 `TunWindows::add_route` 的现有实现。`windows_network_config.h` 迁移后只保留：`WindowsInterfaceId`、`Ipv4AddressSpec`、`WindowsNetworkConfig::{bind, clear, assignAddress, setMtu, setEnabled, lastError}`。
 
 **背景知识：**
-- 现有 `WindowsNetworkConfig::ensureOnLinkRoute`(`windows_network_config.cpp:169-213`）的匹配维度是 luid+前缀+地址，遇系统默认 `224.0.0.0/4` 条目（绑在物理接口上）不会冲突但会并存；design 要求：**同前缀同地址但不同接口/网关的条目先 `DeleteIpForwardEntry2` 再 `CreateIpForwardEntry2`**，规避系统默认组播条目的接管冲突。
+- 系统默认 `224.0.0.0/4` 必须保留；Minecraft 使用独立 `224.0.2.60/32`，以最长前缀优先。RouteManager 按 `(LUID, prefix, NextHop=0)` 去重，借用但不删除任何预先存在的条目，仅清理本次调用成功创建的路由。
 - 路由条目：on-link(`NextHop` 置 `0.0.0.0`)、`Metric=1`、`Protocol=MIB_IPPROTO_NETMGMT`、`SitePrefixLength=前缀`。
 - `DeleteIpForwardEntry2` 参数为非 const 指针，枚举到的候选项需先拷贝到本地变量再删。
 - 解析小工具（`parseAddress`/`prefixLength`/`networkAddress`/`makeLuid`/`systemMessage`）现为 `windows_network_config.cpp` 的匿名命名空间 static，两个编译单元各保留一份拷贝（内部链接，~60 行，避免为此新建共享头）。
@@ -1115,16 +1115,11 @@ public:
         if (!sameDestination(candidate, desired)) {
           continue;
         }
-        if (candidate.InterfaceLuid.Value == luid_.Value) {
-          return true; // 完全相同条目：幂等成功
+        if (candidate.InterfaceLuid.Value == luid_.Value &&
+            candidate.NextHop.Ipv4.sin_addr.S_un.S_addr == INADDR_ANY) {
+          return true; // 精确 on-link 条目已存在：幂等成功
         }
-        // 同前缀不同接口/网关（如系统默认 224.0.0.0/4 条目）：先删后建
-        MIB_IPFORWARD_ROW2 stale = candidate;
-        const DWORD deleteResult = DeleteIpForwardEntry2(&stale);
-        if (deleteResult != NO_ERROR && deleteResult != ERROR_NOT_FOUND) {
-          return failWith(error, "Failed to remove a conflicting IPv4 route",
-                          deleteResult);
-        }
+        // 同前缀的其他接口路由合法共存，必须保留。
       }
     }
 
@@ -1485,12 +1480,12 @@ Expected: 无输出。
 ```bash
 # root 直执行路径（不装 daemon 时）:
 sudo ./build/connecttool-qt.app/Contents/MacOS/connecttool-qt &  # 启动 VPN 后
-netstat -rn -f inet | grep -E "224|utun"   # 应看到 224.0.0.0/4 → utunX
+route -n get 224.0.2.60                    # 应看到精确路由 → utunX
 # 停止 VPN 后:
-netstat -rn -f inet | grep 224.0.0.0       # 不应残留指向 utun 的条目
+route -n get 224.0.2.60                    # 不应再指向已关闭的 utun
 ```
 
-daemon 路径（非 root 常规启动 + 已安装 helper）重复以上 `netstat` 检查。Expected: 两条路径网段路由与 `224.0.0.0/4` 均生效，停止后无残留。
+daemon 路径（非 root 常规启动 + 已安装 helper）重复以上检查。Expected: 两条路径网段路由与 `224.0.2.60/32` 均生效，停止后无残留。
 （若实测条件暂不具备，记录为 Task 9 端到端验证的一部分，不阻塞 commit。)
 
 - [x] **Step 6: Commit(任务 6:macOS 委托)**
@@ -1601,7 +1596,7 @@ git commit -m "refactor(tun): delegate Windows route management to RouteManagerW
   // Install the multicast route so LAN-discovery traffic (e.g. Minecraft
   // 224.0.2.60:4445) is routed into the TUN device. Best-effort: failure only
   // degrades LAN discovery and must not abort the VPN.
-  if (!tunDevice_->add_route("224.0.0.0", "240.0.0.0")) {
+  if (!tunDevice_->add_route("224.0.2.60", "255.255.255.255")) {
     std::cerr << "[SteamVPN] Failed to add the multicast route (LAN discovery "
                  "degraded): "
               << tunDevice_->get_last_error() << std::endl;
@@ -1628,7 +1623,7 @@ git commit -m "refactor(tun): delegate Windows route management to RouteManagerW
     if (baseIP_ != 0 && subnetMask_ != 0) {
       const std::string subnetMaskStr = ipToString(subnetMask_);
       const std::string networkStr = ipToString(baseIP_ & subnetMask_);
-      if (!tunDevice_->remove_route("224.0.0.0", "240.0.0.0")) {
+      if (!tunDevice_->remove_route("224.0.2.60", "255.255.255.255")) {
         std::cerr << "[SteamVPN] Failed to remove the multicast route: "
                   << tunDevice_->get_last_error() << std::endl;
       }
@@ -1664,22 +1659,22 @@ git commit -m "feat(vpn): install multicast route on TUN startup and remove rout
 - [ ] **Step 1: macOS 路由装/删验证**
 
 直执行与 daemon 两条路径分别：
-1. 启动 VPN → `netstat -rn -f inet | grep -E "^224|utun"` 确认 `224.0.0.0/4` 指向 utunX，网段路由存在。
+1. 启动 VPN → `route -n get 224.0.2.60` 确认精确 `/32` 指向 utunX，网段路由存在。
 2. 日志确认 `tunReadLoop` 读到 224.x 包并广播（`[SteamVPN] Broadcast ... -> 224.x`)。
 3. 停止 VPN → `netstat -rn` 确认无指向已销毁 utun 的残留；反复启停 3 次无累积残留。
 
 - [ ] **Step 2: Windows 路由装/删验证**
 
-1. 启动 VPN → `route print -4` 确认 `224.0.0.0/240.0.0.0` 指向 SteamVPN 适配器（系统默认组播条目被接管）。
+1. 启动 VPN → `route print -4` 确认 `224.0.2.60/255.255.255.255` 指向 SteamVPN 适配器，物理网卡默认 `224.0.0.0/4` 保持不变。
 2. 停止 VPN → `route print -4` 确认该条目已删除，无残留；反复启停 3 次验证。
-3. **（终审 Important #1)** 停止 VPN 后确认**物理网卡**的 `224.0.0.0/4` 系统默认条目已恢复（addRoute 的先删后建会删除其他接口的同前缀条目，removeRoute 只删本接口条目，物理网卡组播可能保持被删状态）。若系统未自动重建（接口事件/重启才恢复），回到 Task 4 实现快照-恢复（addRoute 记录被删行、removeRoute 重建），并更新 design 风险表中"VPN 关闭即恢复"的表述。
+3. 停止 VPN 后确认 ConnectTool 的 `224.0.2.60/32` 已删除，物理网卡 `224.0.0.0/4` 在启停前后均未改变。
 
 - [ ] **Step 3: Minecraft 双机实测（macOS ↔ Windows)**
 
 1. A 开局域网世界（「对局域网开放」)。
 2. B 的多人游戏列表应**自动出现**该世界（不经手动添加服务器）。
 3. 加入后单播联机正常（移动/交互无异常）。
-4. Linux 接收端：记录组播投递结果；若游戏收不到（design §6 已知限制：TUN 无 `IFF_MULTICAST`)，按 design 风险项回报用户，不在本 change 内修。
+4. 接收端同时验证原始组播与 Minecraft 单播兜底；确认列表记录的服务器地址仍为房主 TUN IP。Linux 即使未在 TUN 加入组播组，也应通过单播副本收到宣告。
 
 - [ ] **Step 4: 验证记录与 tasks.md 勾选**
 
@@ -1689,6 +1684,6 @@ git commit -m "feat(vpn): install multicast route on TUN startup and remove rout
 
 ## Self-Review 结论
 
-- **Spec 覆盖**:tasks.md §1.1/1.2 → Task 2+5;§1.3 的 `IFF_MULTICAST` 评估 → Task 9 Step 3(4)（维持 design 已知限制决策）；§2.1/2.2/2.3 → Task 3+6;§2.4 → Task 6 Step 5 / Task 9 Step 1;§3.1 → Task 8 Step 1;§3.2 → Task 4（先删后建）+ Task 8 Step 2(stop 显式删除）+ Task 9 Step 2;§4.1/4.2/4.3 → Task 9。design §2.2 三平台实现、§2.3 集成点、§4 错误处理矩阵全部有对应任务。
+- **Spec 覆盖**:tasks.md §1.1/1.2 → Task 2+5;§1.3 → 隔离 Linux TUN 实测；§2.1/2.2/2.3 → Task 3+6;§2.4 → Task 6 Step 5 / Task 9 Step 1;§3.1 → Task 8 Step 1;§3.2 → Task 4（精确去重、保留其他接口）+ Task 8 Step 2(stop 显式删除）+ Task 9 Step 2;§4.1/4.2/4.3 → Task 9。design §2.2 三平台实现、§2.3 集成点、§4 错误处理矩阵全部有对应任务。
 - **类型一致性**:`Ipv4Route`/`addRoute`/`removeRoute`/`createRouteManager`/`buildRouteRequest`/`buildRouteMessage`/`remove_route` 在各任务间签名一致；daemon 中按全限定 `tun::createRouteManager` 调用。
 - **偏离 design 说明**:design §2.3 未指明 `stop()` 删除路由的调用路径；本计划经 `TunInterface::remove_route`（默认 no-op 实现）委托到各实现持有的 RouteManager，符合"TunInterface 各实现委托"与"接口签名不变（仅新增带默认实现的虚函数）"的意图，bridge 无需感知平台差异。

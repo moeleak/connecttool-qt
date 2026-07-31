@@ -1,10 +1,12 @@
-#include "domain/strong_id.h"
 #include "ConnectTool/models/lobbies_model.h"
+#include "application/services/update_controller.h"
+#include "domain/strong_id.h"
+#include "network/protocol/lobby_control.h"
 #include "network/protocol/multiplex_protocol.h"
 #include "network/protocol/wire_codec.h"
+#include "network/vpn/lan_discovery.h"
 #include "network/vpn/node_identity.h"
 #include "network/vpn/vpn_protocol.h"
-#include "application/services/update_controller.h"
 
 #include <QCryptographicHash>
 #include <QTest>
@@ -30,6 +32,9 @@ private slots:
   void multiplexDataFrameMatchesLegacyBytes();
   void multiplexRejectsMalformedFrames();
   void nodeIdentityMatchesLegacyQtHash();
+  void lobbyControlFramesStayOutOfChat();
+  void minecraftDiscoveryGetsUnicastFallback();
+  void minecraftDiscoveryFallbackRejectsOtherTraffic();
   void lobbiesSortReachablePeersByPing();
   void lobbyFilterKeepsCountInSync();
   void versionsAreComparedSemantically();
@@ -133,6 +138,141 @@ void ProtocolTests::nodeIdentityMatchesLegacyQtHash() {
   const auto nodeId = NodeIdentity::generate(domain::PeerId{peerValue});
   QCOMPARE(QByteArray(reinterpret_cast<const char *>(nodeId.data()), nodeId.size()),
            legacyHash.first(NODE_ID_SIZE));
+}
+
+namespace {
+
+std::uint16_t readBigEndianU16(std::span<const std::uint8_t> bytes, std::size_t offset) {
+  return static_cast<std::uint16_t>((static_cast<std::uint16_t>(bytes[offset]) << 8U) |
+                                    static_cast<std::uint16_t>(bytes[offset + 1]));
+}
+
+void writeBigEndianU16(std::span<std::uint8_t> bytes, std::size_t offset, std::uint16_t value) {
+  bytes[offset] = static_cast<std::uint8_t>(value >> 8U);
+  bytes[offset + 1] = static_cast<std::uint8_t>(value & 0xFFU);
+}
+
+std::uint16_t finishTestChecksum(std::uint32_t sum) {
+  while ((sum >> 16U) != 0) {
+    sum = (sum & 0xFFFFU) + (sum >> 16U);
+  }
+  return static_cast<std::uint16_t>(~sum);
+}
+
+void addTestChecksumBytes(std::uint32_t &sum, std::span<const std::uint8_t> bytes) {
+  std::size_t offset = 0;
+  for (; offset + 1 < bytes.size(); offset += 2) {
+    sum += readBigEndianU16(bytes, offset);
+  }
+  if (offset < bytes.size()) {
+    sum += static_cast<std::uint16_t>(bytes[offset]) << 8U;
+  }
+}
+
+std::uint16_t checksum(std::span<const std::uint8_t> bytes) {
+  std::uint32_t sum = 0;
+  addTestChecksumBytes(sum, bytes);
+  return finishTestChecksum(sum);
+}
+
+std::uint16_t udpPacketChecksum(std::span<const std::uint8_t> packet) {
+  const std::size_t headerLength = (packet[0] & 0x0FU) * 4U;
+  const std::uint16_t udpLength = readBigEndianU16(packet, headerLength + 4);
+  std::uint32_t sum = 0;
+  addTestChecksumBytes(sum, packet.subspan(12, 8));
+  sum += 17;
+  sum += udpLength;
+  addTestChecksumBytes(sum, packet.subspan(headerLength, udpLength));
+  return finishTestChecksum(sum);
+}
+
+std::vector<std::uint8_t> minecraftAdvertisement() {
+  constexpr std::string_view payload = "[MOTD]Test[/MOTD][AD]54321[/AD]";
+  std::vector<std::uint8_t> packet(20 + 8 + payload.size(), 0);
+  std::span<std::uint8_t> bytes{packet};
+  bytes[0] = 0x45;
+  writeBigEndianU16(bytes, 2, static_cast<std::uint16_t>(packet.size()));
+  writeBigEndianU16(bytes, 4, 0x1234);
+  bytes[8] = 1;
+  bytes[9] = 17;
+  // 10.23.45.67 -> 224.0.2.60
+  const std::array<std::uint8_t, 8> addresses{10, 23, 45, 67, 224, 0, 2, 60};
+  std::ranges::copy(addresses, packet.begin() + 12);
+  writeBigEndianU16(bytes, 20, 50000);
+  writeBigEndianU16(bytes, 22, network::kMinecraftLanDiscoveryPort);
+  writeBigEndianU16(bytes, 24, static_cast<std::uint16_t>(8 + payload.size()));
+  std::ranges::copy(payload, packet.begin() + 28);
+
+  writeBigEndianU16(bytes, 10, checksum(std::span<const std::uint8_t>{packet}.first(20)));
+  std::uint16_t udpChecksum = udpPacketChecksum(packet);
+  if (udpChecksum == 0) {
+    udpChecksum = 0xFFFFU;
+  }
+  writeBigEndianU16(bytes, 26, udpChecksum);
+  return packet;
+}
+
+} // namespace
+
+void ProtocolTests::lobbyControlFramesStayOutOfChat() {
+  QCOMPARE(lobby::classifyPayload("hello"), lobby::PayloadKind::UserChat);
+  QCOMPARE(lobby::classifyPayload("PING|7656119:42:relay"), lobby::PayloadKind::Ping);
+  QCOMPARE(lobby::classifyPayload(R"(PROFILE|{"displayName":"Alice","steamId":"7656119"})"),
+           lobby::PayloadKind::LegacyProfile);
+  QCOMPARE(lobby::classifyPayload("PROFILE is a normal word"), lobby::PayloadKind::UserChat);
+}
+
+void ProtocolTests::minecraftDiscoveryGetsUnicastFallback() {
+  const auto multicast = minecraftAdvertisement();
+  constexpr std::uint32_t localAddress = 0x0A010203U;  // 10.1.2.3
+  constexpr std::uint32_t remoteAddress = 0x0A090807U; // 10.9.8.7
+  const auto fallback =
+      network::makeMinecraftLanDiscoveryUnicast(multicast, localAddress, remoteAddress);
+  QVERIFY(fallback.has_value());
+  QCOMPARE(fallback->size(), multicast.size());
+
+  const std::array<std::uint8_t, 4> expectedSource{10, 9, 8, 7};
+  QVERIFY(
+      std::ranges::equal(std::span<const std::uint8_t>{*fallback}.subspan(12, 4), expectedSource));
+  const std::array<std::uint8_t, 4> expectedDestination{10, 1, 2, 3};
+  QVERIFY(std::ranges::equal(std::span<const std::uint8_t>{*fallback}.subspan(16, 4),
+                             expectedDestination));
+  QCOMPARE(readBigEndianU16(*fallback, 22), network::kMinecraftLanDiscoveryPort);
+  QCOMPARE(checksum(std::span<const std::uint8_t>{*fallback}.first(20)), std::uint16_t{0});
+  QCOMPARE(udpPacketChecksum(*fallback), std::uint16_t{0});
+  // The source packet remains the original multicast datagram.
+  const std::array<std::uint8_t, 4> multicastDestination{224, 0, 2, 60};
+  QVERIFY(std::ranges::equal(std::span<const std::uint8_t>{multicast}.subspan(16, 4),
+                             multicastDestination));
+  const std::array<std::uint8_t, 4> originalSource{10, 23, 45, 67};
+  QVERIFY(
+      std::ranges::equal(std::span<const std::uint8_t>{multicast}.subspan(12, 4), originalSource));
+}
+
+void ProtocolTests::minecraftDiscoveryFallbackRejectsOtherTraffic() {
+  auto packet = minecraftAdvertisement();
+  QVERIFY(!network::makeMinecraftLanDiscoveryUnicast(packet, 0, 0x0A000002U).has_value());
+  QVERIFY(!network::makeMinecraftLanDiscoveryUnicast(packet, 0x0A000001U, 0).has_value());
+  QVERIFY(!network::makeMinecraftLanDiscoveryUnicast(packet, 0x0A000001U, 0x0A000001U).has_value());
+
+  packet[22] = 0x13;
+  packet[23] = 0x88; // UDP/5000
+  QVERIFY(!network::makeMinecraftLanDiscoveryUnicast(packet, 0x0A000001U, 0x0A000002U).has_value());
+
+  packet = minecraftAdvertisement();
+  packet[6] = 0x20; // more fragments
+  QVERIFY(!network::makeMinecraftLanDiscoveryUnicast(packet, 0x0A000001U, 0x0A000002U).has_value());
+
+  QVERIFY(!network::makeMinecraftLanDiscoveryUnicast(
+               std::span<const std::uint8_t>{packet}.first(19), 0x0A000001U, 0x0A000002U)
+               .has_value());
+
+  packet = minecraftAdvertisement();
+  writeBigEndianU16(packet, 26, 0); // IPv4 permits a missing UDP checksum.
+  const auto zeroChecksumFallback =
+      network::makeMinecraftLanDiscoveryUnicast(packet, 0x0A000001U, 0x0A000002U);
+  QVERIFY(zeroChecksumFallback.has_value());
+  QCOMPARE(readBigEndianU16(*zeroChecksumFallback, 26), std::uint16_t{0});
 }
 
 void ProtocolTests::lobbiesSortReachablePeersByPing() {

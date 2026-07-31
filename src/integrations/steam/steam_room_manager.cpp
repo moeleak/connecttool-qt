@@ -1,4 +1,5 @@
 #include "steam_room_manager.h"
+#include "network/protocol/lobby_control.h"
 #include "steam_networking_manager.h"
 #include "steam_vpn_networking_manager.h"
 #include <QDebug>
@@ -18,7 +19,6 @@ constexpr const char *kLobbyKeyPingLocation = "ct_ping_loc";
 constexpr const char *kLobbyKeyTag = "ct_tag";
 constexpr const char *kLobbyKeyPinned = "ct_pin";
 constexpr const char *kLobbyTagValue = "1";
-constexpr const char *kPingPrefix = "PING|";
 constexpr const char *kLobbyModeTun = "tun";
 constexpr const char *kLobbyModeTcp = "tcp";
 constexpr int kLobbyMaxMembers = 250; // Allow more than the default 4 slots
@@ -76,13 +76,19 @@ void SteamMatchmakingCallbacks::OnLobbyChatMsg(LobbyChatMsg_t *pCallback) {
   }
   data[std::min<int>(read, sizeof(data) - 1)] = '\0';
   const std::string payload(data);
-  if (payload.rfind(kPingPrefix, 0) == 0) {
+  const auto payloadKind = connecttool::lobby::classifyPayload(payload);
+  if (payloadKind == connecttool::lobby::PayloadKind::Ping) {
     CSteamID owner =
         SteamMatchmaking()->GetLobbyOwner(pCallback->m_ulSteamIDLobby);
     if (owner.IsValid() && sender.IsValid() && sender != owner) {
       return; // only trust host broadcast for ping payloads
     }
     roomManager_->handlePingMessage(payload);
+    return;
+  }
+  if (payloadKind == connecttool::lobby::PayloadKind::LegacyProfile) {
+    // Older/third-party ConnectTool clients periodically sent member profile
+    // synchronization over lobby chat. It is control traffic, not a message.
     return;
   }
   roomManager_->handleChatMessage(sender, payload);
@@ -703,7 +709,7 @@ void SteamRoomManager::broadcastPings(
   if (!SteamMatchmaking()) {
     return;
   }
-  std::string payload(kPingPrefix);
+  std::string payload(connecttool::lobby::kPingPrefix);
   bool first = true;
   for (const auto &entry : pings) {
     const uint64_t id = std::get<0>(entry);
@@ -721,7 +727,7 @@ void SteamRoomManager::broadcastPings(
     payload.push_back(':');
     payload += std::get<2>(entry);
   }
-  if (payload.size() <= strlen(kPingPrefix)) {
+  if (payload.size() <= connecttool::lobby::kPingPrefix.size()) {
     return;
   }
   SteamMatchmaking()->SendLobbyChatMsg(
@@ -729,10 +735,10 @@ void SteamRoomManager::broadcastPings(
 }
 
 void SteamRoomManager::handlePingMessage(const std::string &payload) {
-  if (payload.rfind(kPingPrefix, 0) != 0) {
+  if (!std::string_view{payload}.starts_with(connecttool::lobby::kPingPrefix)) {
     return;
   }
-  const std::string data = payload.substr(strlen(kPingPrefix));
+  const std::string data = payload.substr(connecttool::lobby::kPingPrefix.size());
   size_t start = 0;
   const auto now = std::chrono::steady_clock::now();
   while (start < data.size()) {

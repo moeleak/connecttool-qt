@@ -1,6 +1,6 @@
 #include "steam_vpn_networking_manager.h"
-#include "network/vpn/vpn_protocol.h"
 #include "network/protocol/wire_codec.h"
+#include "network/vpn/vpn_protocol.h"
 #include "steam_vpn_bridge.h"
 #include "vpn_message_handler.h"
 
@@ -201,6 +201,11 @@ void SteamVpnNetworkingManager::syncPeers(const std::set<CSteamID> &desiredPeers
   }
 }
 
+bool SteamVpnNetworkingManager::isKnownPeer(CSteamID peerID) const {
+  std::lock_guard<std::mutex> lock(peersMutex_);
+  return peers_.contains(peerID);
+}
+
 std::set<CSteamID> SteamVpnNetworkingManager::getPeers() const {
   std::lock_guard<std::mutex> lock(peersMutex_);
   return peers_;
@@ -264,7 +269,7 @@ void SteamVpnNetworkingManager::stopMessageHandler() {
 
 void SteamVpnNetworkingManager::handleIncomingVpnMessage(const uint8_t *data, size_t size,
                                                          CSteamID senderSteamID) {
-  if (!vpnBridge_) {
+  if (!vpnBridge_ || !isKnownPeer(senderSteamID)) {
     return;
   }
   vpnBridge_->handleVpnMessage(data, size, senderSteamID);
@@ -274,9 +279,11 @@ void SteamVpnNetworkingManager::OnSessionRequest(
     SteamNetworkingMessagesSessionRequest_t *pCallback) {
   const CSteamID remoteSteamID = pCallback->m_identityRemote.GetSteamID();
   std::cout << "[SteamVPN] Session request from " << remoteSteamID.ConvertToUint64() << std::endl;
-  if (messagesInterface_) {
+  if (messagesInterface_ && isKnownPeer(remoteSteamID)) {
     messagesInterface_->AcceptSessionWithUser(pCallback->m_identityRemote);
     std::cout << "[SteamVPN] Accepted session from known peer" << std::endl;
+  } else {
+    std::cout << "[SteamVPN] Rejected session from non-lobby peer" << std::endl;
   }
 }
 

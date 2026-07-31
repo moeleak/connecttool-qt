@@ -1,6 +1,7 @@
 #include "steam_vpn_bridge.h"
 #include "integrations/steam/steam_id.h"
 #include "network/protocol/wire_codec.h"
+#include "network/vpn/lan_discovery.h"
 #include "steam_vpn_networking_manager.h"
 #include <algorithm>
 #include <chrono>
@@ -142,7 +143,7 @@ void SteamVpnBridge::stop() {
     if (baseIP_ != 0 && subnetMask_ != 0) {
       const std::string subnetMaskStr = ipToString(subnetMask_);
       const std::string networkStr = ipToString(baseIP_ & subnetMask_);
-      if (!tunDevice_->remove_route("224.0.0.0", "240.0.0.0")) {
+      if (!tunDevice_->remove_route("224.0.2.60", "255.255.255.255")) {
         std::cerr << "[SteamVPN] Failed to remove the multicast route: "
                   << tunDevice_->get_last_error() << std::endl;
       }
@@ -318,6 +319,18 @@ void SteamVpnBridge::handleVpnMessage(const uint8_t *data, size_t length, CSteam
       const uint32_t destIP = extractDestIP(ipPacket, ipPacketLen);
       const uint32_t senderIP = ntohl(wrapper.sourceIP);
 
+      std::optional<uint32_t> authenticatedSourceIP;
+      {
+        std::lock_guard<std::mutex> lock(routingMutex_);
+        for (const auto &[routeIP, route] : routingTable_) {
+          if (!route.isLocal && route.peerId == senderPeerId &&
+              route.nodeId == wrapper.senderNodeId) {
+            authenticatedSourceIP = routeIP;
+            break;
+          }
+        }
+      }
+
       const uint32_t conflictIP = senderIP != 0 ? senderIP : destIP;
       if (const auto conflict =
               heartbeatManager_.detectConflict(conflictIP, wrapper.senderNodeId)) {
@@ -332,8 +345,21 @@ void SteamVpnBridge::handleVpnMessage(const uint8_t *data, size_t length, CSteam
                        conflict->loserPeerId);
       }
 
-      if (destIP == localIP_.load(std::memory_order_relaxed) || isBroadcastAddress(destIP)) {
+      const uint32_t localIP = localIP_.load(std::memory_order_relaxed);
+      if (destIP == localIP || isBroadcastAddress(destIP)) {
         tunDevice_->write(ipPacket, ipPacketLen);
+        // Multicast membership is interface-specific. Minecraft can join
+        // 224.0.2.60 on the physical NIC and then ignore the same datagram
+        // arriving from our TUN. For an authenticated peer route, inject a
+        // unicast copy to the local TUN address and canonicalize its source to
+        // that peer's TUN IP (the address Minecraft uses for the server entry).
+        if (authenticatedSourceIP) {
+          if (const auto fallback = connecttool::network::makeMinecraftLanDiscoveryUnicast(
+                  std::span<const std::uint8_t>{ipPacket, ipPacketLen}, localIP,
+                  *authenticatedSourceIP)) {
+            tunDevice_->write(fallback->data(), fallback->size());
+          }
+        }
         std::lock_guard<std::mutex> lock(statsMutex_);
         stats_.packetsReceived++;
         stats_.bytesReceived += ipPacketLen;
@@ -448,23 +474,22 @@ void SteamVpnBridge::onUserJoined(CSteamID steamID) {
 }
 
 void SteamVpnBridge::onUserLeft(CSteamID steamID) {
-  std::lock_guard<std::mutex> lock(routingMutex_);
-  for (auto it = routingTable_.begin(); it != routingTable_.end();) {
-    if (it->second.peerId == connecttool::steam::toPeerId(steamID)) {
-      heartbeatManager_.unregisterNode(it->second.nodeId);
-      ipNegotiator_.markIPUnused(it->first);
-      it = routingTable_.erase(it);
-    } else {
-      ++it;
+  {
+    std::lock_guard<std::mutex> lock(routingMutex_);
+    for (auto it = routingTable_.begin(); it != routingTable_.end();) {
+      if (it->second.peerId == connecttool::steam::toPeerId(steamID)) {
+        heartbeatManager_.unregisterNode(it->second.nodeId);
+        ipNegotiator_.markIPUnused(it->first);
+        it = routingTable_.erase(it);
+      } else {
+        ++it;
+      }
     }
   }
   if (SteamUser() && steamID == SteamUser()->GetSteamID()) {
-    running_ = false;
-    heartbeatManager_.stop();
-    if (tunDevice_) {
-      tunDevice_->close();
-    }
-    localIP_.store(0, std::memory_order_relaxed);
+    // Use the normal shutdown path so host routes are removed before the TUN
+    // closes. This call must happen after releasing routingMutex_.
+    stop();
   }
 }
 
@@ -508,10 +533,11 @@ void SteamVpnBridge::onNegotiationSuccess(uint32_t ipAddress, const NodeID &node
     return;
   }
 
-  // Install the multicast route so LAN-discovery traffic (e.g. Minecraft
-  // 224.0.2.60:4445) is routed into the TUN device. Best-effort: failure only
-  // degrades LAN discovery and must not abort the VPN.
-  if (!tunDevice_->add_route("224.0.0.0", "240.0.0.0")) {
+  // Install a host route for Minecraft Java's discovery group. A /32 wins
+  // over each OS's automatic 224.0.0.0/4 routes without hijacking unrelated
+  // local multicast such as mDNS or SSDP. Best-effort: failure only degrades
+  // LAN discovery and must not abort the VPN.
+  if (!tunDevice_->add_route("224.0.2.60", "255.255.255.255")) {
     std::cerr << "[SteamVPN] Failed to add the multicast route (LAN discovery "
                  "degraded): "
               << tunDevice_->get_last_error() << std::endl;

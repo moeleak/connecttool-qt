@@ -16,7 +16,7 @@ TUN 模式下游戏局域网发现不可用。Minecraft「对局域网开放」�
 
 ## 2. 方案总览
 
-引入跨平台 **RouteManager 抽象**，承载三平台的路由增删；VPN 启动时为 TUN 加装 `224.0.0.0/4` 组播路由，停止时显式删除。
+引入跨平台 **RouteManager 抽象**，承载三平台的路由增删；VPN 启动时为 TUN 加装 Minecraft `224.0.2.60/32` 主机路由，停止时显式删除。
 
 ```
 src/platform/route/
@@ -71,7 +71,7 @@ std::unique_ptr<RouteManager> createRouteManager(const std::string &ifname);
 **Windows(`route_manager_windows.cpp`)**
 
 - 从 `windows_network_config.cpp` 迁入路由增删职责（地址分配、MTU、防火墙规则保留原处）,`WindowsNetworkConfig::ensureOnLinkRoute` 删除，`TunWindows::add_route` 改为委托 RouteManager
-- `addRoute`：枚举 `GetIpForwardTable2`，同前缀但不同接口/网关的条目先 `DeleteIpForwardEntry2` 再 `CreateIpForwardEntry2`(on-link,NextHop=0.0.0.0,Metric=1,`MIB_IPPROTO_NETMGMT`)，规避系统默认 `224.0.0.0/4` 条目冲突；完全相同条目视为成功
+- `addRoute`：枚举 `GetIpForwardTable2`，按 `(LUID, prefix, NextHop=0)` 精确匹配；保留其他接口与所有预先存在的路由，仅将本次 `CreateIpForwardEntry2` 成功创建的条目标为 owned 并在停止时删除
 - `removeRoute`:`DeleteIpForwardEntry2`;`ERROR_NOT_FOUND` 视为成功
 
 ### 2.3 集成点
@@ -83,20 +83,20 @@ std::unique_ptr<RouteManager> createRouteManager(const std::string &ifname);
 
 **SteamVpnBridge(`steam_vpn_bridge.cpp`)**
 
-- `onNegotiationSuccess`：网段 `add_route` 成功后，加装 `{224.0.0.0, 240.0.0.0}`；失败仅 `std::cerr` 记日志，不调用 `recordFailure`，不中断启动
+- `onNegotiationSuccess`：网段 `add_route` 成功后，加装 `{224.0.2.60, 255.255.255.255}`；失败仅 `std::cerr` 记日志，不调用 `recordFailure`，不中断启动
 - `stop()`：关 TUN 前显式 `removeRoute` 组播路由与网段路由（best-effort，失败仅日志）;macOS/Linux 与接口关闭自动回收构成双保险，Windows 依赖显式删除
 
 ## 3. 数据流
 
 ```
-应用(游戏) ─组播 224.x─► OS 路由表 ─224.0.0.0/4→TUN─► tunReadLoop
+应用(游戏) ─224.0.2.60─► OS 路由表 ─224.0.2.60/32→TUN─► tunReadLoop
    │                                                        │ isBroadcastAddress → broadcastMessage
    │                                                        ▼
    │                                            Steam P2P ─► 所有 peer
    │                                                        ▼
    │                              peer: handleVpnMessage → 写入本地 TUN → 内核投递
    ▼
-onNegotiationSuccess: add_route(网段) → add_route(224.0.0.0/4, best-effort)
+onNegotiationSuccess: add_route(网段) → add_route(224.0.2.60/32, best-effort)
 stop(): removeRoute(组播) + removeRoute(网段) → close()
 ```
 
@@ -116,16 +116,16 @@ stop(): removeRoute(组播) + removeRoute(网段) → close()
 - **macOS 实测**:`netstat -rn | grep 224` 验证装/删；直执行与 daemon 两条路径；反复启停查残留
 - **Windows 实测**:`route print` 验证；与系统默认组播条目共存/接管；adapter 关闭后无残留
 - **端到端**:macOS↔Windows 双端 Minecraft,A 开局域网世界 → B 多人列表自动出现；日志确认 `tunReadLoop` 读到 224.x 包并转发
-- **Linux**：仅编译验证 + 代码审查（已知限制，本 change 不实测）
+- **Linux**：隔离容器中使用生产 RouteManager + 真实 TUN 验证 `/32` 路由、wildcard UDP 发送、校验和与清理
 
 ## 6. 风险与缓解
 
 | 风险 | 缓解 |
 |------|------|
-| Linux 接收端内核不投递组播给仅在默认接口 join 组的游戏 socket（TUN 无 IFF_MULTICAST) | 本 change 接受为已知限制；后续按需另开 change(IFF_MULTICAST 或中继兜底） |
-| VPN 期间本机全部组播被劫持，mDNS/SSDP 受影响 | 接受（与 ZeroTier 一致）;VPN 关闭即恢复；release notes 说明 |
+| 接收端内核不投递组播给仅在默认接口 join 组的游戏 socket | 对 Minecraft `224.0.2.60:4445` 同时注入源为认证 peer TUN IP 的本地 TUN-IP 单播副本，并重算校验和；原组播路径继续保留 |
+| 无关组播被转发或本地发现中断 | 仅路由 Minecraft `224.0.2.60/32`;mDNS/SSDP 等继续走物理网卡 |
 | routing socket/netlink 实现缺陷 | 消息构造单测 + 双平台实测；组播路径失败仅降级不影响单播 |
-| Windows 默认组播路由冲突 | 同前缀先删后建 |
+| Windows 默认 `/4` 组播路由冲突 | `/32` 通过最长前缀优先，不删除或修改物理路由 |
 | macOS 非 root 直执行 EPERM | 与现状一致，daemon 路径不受影响 |
 
 ## 7. 范围边界（Non-Goals)

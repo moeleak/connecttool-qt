@@ -3,6 +3,7 @@ add_library(connecttool_network STATIC
     tcp/tcp_tunnel_server.cpp
     vpn/heartbeat_manager.cpp
     vpn/ip_negotiator.cpp
+    vpn/lan_discovery.cpp
     vpn/node_identity.cpp
     vpn/sha256.cpp)
 add_library(ConnectTool::Network ALIAS connecttool_network)

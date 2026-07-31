@@ -78,12 +78,16 @@ void testAddMulticast() {
 }
 
 void testHostRouteOmitsNetmask() {
-  const auto msg =
-      buildRouteMessage(RTM_ADD, 1, 1, {"10.0.0.7", "255.255.255.255"}, 3);
+  const auto msg = buildRouteMessage(RTM_ADD, 1, 1, {"224.0.2.60", "255.255.255.255"}, 3);
   CHECK(!msg.empty());
   const auto *hdr = reinterpret_cast<const rt_msghdr *>(msg.data());
   CHECK((hdr->rtm_flags & RTF_HOST) != 0);
   CHECK(hdr->rtm_addrs == (RTA_DST | RTA_GATEWAY));
+
+  const auto *dst = reinterpret_cast<const sockaddr_in *>(msg.data() + sizeof(rt_msghdr));
+  in_addr expected{};
+  inet_pton(AF_INET, "224.0.2.60", &expected);
+  CHECK(std::memcmp(&dst->sin_addr, &expected, sizeof(expected)) == 0);
 }
 
 void testChangeMessage() {

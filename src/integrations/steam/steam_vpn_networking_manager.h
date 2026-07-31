@@ -28,6 +28,7 @@ public:
   void removePeer(CSteamID peerID);
   void clearPeers();
   void syncPeers(const std::set<CSteamID> &desiredPeers);
+  [[nodiscard]] bool isKnownPeer(CSteamID peerID) const;
   std::set<CSteamID> getPeers() const;
 
   int getPeerPing(CSteamID peerID) const;

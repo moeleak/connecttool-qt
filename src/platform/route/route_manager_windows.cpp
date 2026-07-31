@@ -22,8 +22,10 @@
 #include <bit>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <sstream>
+#include <unordered_set>
 
 namespace tun {
 namespace {
@@ -65,11 +67,10 @@ using RouteTable = std::unique_ptr<MIB_IPFORWARD_TABLE2, MibTableDeleter>;
 
 [[nodiscard]] std::string systemMessage(unsigned long error) {
   char *buffer = nullptr;
-  const DWORD length = FormatMessageA(
-      FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
-          FORMAT_MESSAGE_IGNORE_INSERTS,
-      nullptr, error, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
-      reinterpret_cast<char *>(&buffer), 0, nullptr);
+  const DWORD length = FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                                          FORMAT_MESSAGE_IGNORE_INSERTS,
+                                      nullptr, error, MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
+                                      reinterpret_cast<char *>(&buffer), 0, nullptr);
   if (length == 0 || buffer == nullptr) {
     return {};
   }
@@ -81,8 +82,7 @@ using RouteTable = std::unique_ptr<MIB_IPFORWARD_TABLE2, MibTableDeleter>;
   return message;
 }
 
-[[nodiscard]] bool failWith(std::string *error, const char *operation,
-                            DWORD code) {
+[[nodiscard]] bool failWith(std::string *error, const char *operation, DWORD code) {
   std::ostringstream stream;
   stream << operation << " (Error " << code << ')';
   const std::string message = systemMessage(code);
@@ -93,27 +93,39 @@ using RouteTable = std::unique_ptr<MIB_IPFORWARD_TABLE2, MibTableDeleter>;
   return false;
 }
 
-// 匹配维度不含接口：用于发现同前缀同地址但绑在其他接口上的冲突条目
-// （如系统默认 224.0.0.0/4），由调用方决定先删后建。
+// 仅比较目的前缀；接口由调用方单独判断。同一前缀可以合法存在于多个接口。
 [[nodiscard]] bool sameDestination(const MIB_IPFORWARD_ROW2 &candidate,
                                    const MIB_IPFORWARD_ROW2 &desired) noexcept {
-  return candidate.DestinationPrefix.PrefixLength ==
-             desired.DestinationPrefix.PrefixLength &&
+  return candidate.DestinationPrefix.PrefixLength == desired.DestinationPrefix.PrefixLength &&
          candidate.DestinationPrefix.Prefix.si_family == AF_INET &&
          candidate.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr ==
              desired.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr;
 }
 
+[[nodiscard]] bool sameOnLinkRoute(const MIB_IPFORWARD_ROW2 &candidate,
+                                   const MIB_IPFORWARD_ROW2 &desired) noexcept {
+  return sameDestination(candidate, desired) &&
+         candidate.InterfaceLuid.Value == desired.InterfaceLuid.Value &&
+         candidate.NextHop.si_family == AF_INET &&
+         candidate.NextHop.Ipv4.sin_addr.S_un.S_addr == INADDR_ANY;
+}
+
+[[nodiscard]] std::uint64_t routeKey(const MIB_IPFORWARD_ROW2 &route) noexcept {
+  return (static_cast<std::uint64_t>(route.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr)
+          << 8U) |
+         route.DestinationPrefix.PrefixLength;
+}
+
 class RouteManagerWindows final : public RouteManager {
 public:
-  RouteManagerWindows(NET_LUID luid, ULONG index)
-      : luid_(luid), index_(index) {}
+  RouteManagerWindows(NET_LUID luid, ULONG index) : luid_(luid), index_(index) {}
 
   bool addRoute(const Ipv4Route &route, std::string *error) override {
     MIB_IPFORWARD_ROW2 desired{};
     if (!buildRow(route, &desired, error)) {
       return false;
     }
+    std::lock_guard<std::mutex> stateLock(stateMutex_);
 
     MIB_IPFORWARD_TABLE2 *rawTable = nullptr;
     const DWORD tableResult = GetIpForwardTable2(AF_INET, &rawTable);
@@ -128,24 +140,44 @@ public:
         if (!sameDestination(candidate, desired)) {
           continue;
         }
-        if (candidate.InterfaceLuid.Value == luid_.Value) {
-          return true; // 完全相同条目：幂等成功
+        if (sameOnLinkRoute(candidate, desired)) {
+          return borrowExistingRoute(desired);
         }
-        // 同前缀不同接口/网关（如系统默认 224.0.0.0/4 条目）：先删后建
-        MIB_IPFORWARD_ROW2 stale = candidate;
-        const DWORD deleteResult = DeleteIpForwardEntry2(&stale);
-        if (deleteResult != NO_ERROR && deleteResult != ERROR_NOT_FOUND) {
-          return failWith(error, "Failed to remove a conflicting IPv4 route",
-                          deleteResult);
-        }
+        // Windows permits the same destination prefix on different
+        // interfaces. Keep physical-interface routes intact: route selection
+        // uses the combined interface + route metric, and removing another
+        // interface's multicast route here would not be undone by stop().
       }
     }
 
     const DWORD createResult = CreateIpForwardEntry2(&desired);
-    if (createResult != NO_ERROR &&
-        createResult != ERROR_OBJECT_ALREADY_EXISTS) {
+    if (createResult != NO_ERROR && createResult != ERROR_OBJECT_ALREADY_EXISTS) {
       return failWith(error, "Failed to create IPv4 route", createResult);
     }
+    if (createResult == ERROR_OBJECT_ALREADY_EXISTS) {
+      // The table snapshot raced another creator. Re-query once and converge
+      // on the row that now exists instead of treating the duplicate as an
+      // unconditional success.
+      MIB_IPFORWARD_TABLE2 *rawRetryTable = nullptr;
+      const DWORD retryResult = GetIpForwardTable2(AF_INET, &rawRetryTable);
+      if (retryResult != NO_ERROR) {
+        return failWith(error, "Failed to re-read an existing IPv4 route", retryResult);
+      }
+      const RouteTable retryTable{rawRetryTable};
+      if (!retryTable) {
+        return failWith(error, "Existing IPv4 route table was empty", ERROR_NOT_FOUND);
+      }
+      for (ULONG i = 0; i < retryTable->NumEntries; ++i) {
+        const auto &candidate = retryTable->Table[i];
+        if (sameOnLinkRoute(candidate, desired)) {
+          return borrowExistingRoute(desired);
+        }
+      }
+      return failWith(error, "IPv4 route exists but could not be resolved", createResult);
+    }
+    const std::uint64_t key = routeKey(desired);
+    borrowedRoutes_.erase(key);
+    ownedRoutes_.insert(key);
     return true;
   }
 
@@ -154,10 +186,20 @@ public:
     if (!buildRow(route, &desired, error)) {
       return false;
     }
+    std::lock_guard<std::mutex> stateLock(stateMutex_);
+
+    const std::uint64_t key = routeKey(desired);
+    if (borrowedRoutes_.erase(key) != 0) {
+      return true;
+    }
+    if (!ownedRoutes_.contains(key)) {
+      return true;
+    }
 
     MIB_IPFORWARD_TABLE2 *rawTable = nullptr;
     const DWORD tableResult = GetIpForwardTable2(AF_INET, &rawTable);
     if (tableResult == ERROR_NOT_FOUND) {
+      ownedRoutes_.erase(key);
       return true; // 幂等：不存在视为成功
     }
     if (tableResult != NO_ERROR) {
@@ -167,9 +209,14 @@ public:
 
     for (ULONG i = 0; i < table->NumEntries; ++i) {
       const auto &candidate = table->Table[i];
-      if (!sameDestination(candidate, desired) ||
-          candidate.InterfaceLuid.Value != luid_.Value) {
+      if (!sameOnLinkRoute(candidate, desired)) {
         continue;
+      }
+      // If another component replaced our route with an automatic one, drop
+      // ownership without deleting the replacement.
+      if (candidate.Protocol != MIB_IPPROTO_NETMGMT) {
+        ownedRoutes_.erase(key);
+        return true;
       }
       // DeleteIpForwardEntry2 参数为非 const 指针，候选项先拷贝到本地再删
       MIB_IPFORWARD_ROW2 stale = candidate;
@@ -177,12 +224,24 @@ public:
       if (deleteResult != NO_ERROR && deleteResult != ERROR_NOT_FOUND) {
         return failWith(error, "Failed to delete IPv4 route", deleteResult);
       }
+      ownedRoutes_.erase(key);
       return true;
     }
+    ownedRoutes_.erase(key);
     return true; // 未找到：幂等成功
   }
 
 private:
+  [[nodiscard]] bool borrowExistingRoute(const MIB_IPFORWARD_ROW2 &desired) {
+    const std::uint64_t key = routeKey(desired);
+    // NETMGMT is not a ConnectTool-specific ownership marker. Another process
+    // may own an otherwise identical row, so every pre-existing route is
+    // borrowed unchanged and never removed by this manager.
+    ownedRoutes_.erase(key);
+    borrowedRoutes_.insert(key);
+    return true;
+  }
+
   [[nodiscard]] bool buildRow(const Ipv4Route &route, MIB_IPFORWARD_ROW2 *row,
                               std::string *error) const {
     const auto network = parseAddress(route.network);
@@ -206,6 +265,9 @@ private:
 
   NET_LUID luid_{};
   ULONG index_ = 0;
+  std::mutex stateMutex_;
+  std::unordered_set<std::uint64_t> ownedRoutes_;
+  std::unordered_set<std::uint64_t> borrowedRoutes_;
 };
 
 } // namespace
