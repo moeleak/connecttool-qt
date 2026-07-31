@@ -874,7 +874,7 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.ref_name }}
-          name: ${{ contains(github.ref_name, '-alpha') && 'alpha' || github.ref_name }}
+          name: ${{ github.ref_name }}
           prerelease: ${{ contains(github.ref_name, '-alpha') }}
           make_latest: ${{ contains(github.ref_name, '-alpha') && 'false' || 'legacy' }}
           body_path: release-notes.md
