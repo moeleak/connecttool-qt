@@ -90,6 +90,7 @@ MD.ItemDelegate {
         Item {
             id: identitySlot
 
+            visible: root.isSelf || root.isFriend
             Layout.minimumWidth: 64
             Layout.preferredWidth: 64
             Layout.maximumWidth: 64
@@ -141,10 +142,7 @@ MD.ItemDelegate {
             }
         }
 
-        ColumnLayout {
-            Layout.minimumWidth: 36
-            Layout.preferredWidth: 36
-            Layout.maximumWidth: 36
+        RowLayout {
             Layout.alignment: Qt.AlignVCenter
             spacing: 0
 
@@ -153,8 +151,9 @@ MD.ItemDelegate {
 
                 visible: !root.isFriend && !root.isSelf
                 icon.name: MD.Token.icon.person_add
-                mdState.type: MD.Enum.IBtStandard
-                mdState.size: MD.Enum.XS
+                mdState.type: MD.Enum.IBtFilledTonal
+                mdState.size: MD.Enum.S
+                mdState.widthMode: MD.Enum.NarrowWidth
                 Accessible.name: qsTr("添加好友")
                 onClicked: App.social.addFriend(root.steamId)
 
@@ -170,7 +169,8 @@ MD.ItemDelegate {
                 visible: root.ip.length > 0
                 icon.name: MD.Token.icon.content_copy
                 mdState.type: MD.Enum.IBtStandard
-                mdState.size: MD.Enum.XS
+                mdState.size: MD.Enum.S
+                mdState.widthMode: MD.Enum.NarrowWidth
                 Accessible.name: qsTr("复制 IP")
                 onClicked: App.copy(root.ip)
 
